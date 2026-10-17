@@ -1,0 +1,9 @@
+{
+  "id": "journal-media",
+  "name": "Journal Media",
+  "version": "0.1.0",
+  "minAppVersion": "1.10.0",
+  "description": "Save pasted JPEG and PNG images with UUID filenames, preserved metadata, descriptions and linked image records for Bases.",
+  "author": "aegerita",
+  "isDesktopOnly": true
+}

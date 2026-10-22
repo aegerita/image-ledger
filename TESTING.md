@@ -57,14 +57,15 @@ Keep screenshots and a short results note with the test vault. A blocked action,
 
 ## Current validation
 
-Verified on 2026-10-21:
+Verified on 2026-10-22 in two fresh synthetic vaults, Obsidian 1.14.4:
 
 - PASS: `npm test` builds successfully and passes 35 tests.
-- PASS: a generated synthetic vault was created and opened in Obsidian 1.14.4.
-- FAILED EXPERIMENT: CLI host automation did not reliably locate the caption dialog across separate Obsidian windows. The installed application also reported outdated installer support for the CLI.
-- NOT RUN: a complete live functional pass through the protocol above.
+- PASS: native JPEG file import and Preview clipboard capture, with independent payload, metadata, record, XMP and embed checks. Preview supplied a transformed PNG rather than the original JPEG bytes.
+- PASS: live app checks for cross-year duplicate reuse, actual Bases caption editing and image/journal links, note-switch insertion, Describe later, the edit-description command, caption-open reload/recovery, and final audits. These used the loaded plugin and real app controls through programmatic DOM/API actions; paste/drop handler inputs were synthetic events.
+- PASS: both final audit notices and independent file checks report zero pending descriptions, zero missing files and zero interrupted captures.
+- NOT RUN: the complete native mouse/keyboard protocol. Native Finder drag/drop, repeated duplicate file-picker selection, and the remaining native control paths are unverified. Computer control returned stale screens, `noWindowsAvailable` and timeouts; these are not plugin failures or passes.
 
-The experimental host runner is not included. Inconsistent multiwindow CLI control prevented dependable results; automated host tests can be added after stable application control is available. The computer-use protocol remains the supported live verification path.
+See [the dated report](docs/smoke-tests/2026-10-22.md) for methods, hashes, receipts and remaining native gaps. This is mixed native/host validation, not a full native protocol pass. The one-off host runners are not included as a supported automated test framework. The computer-use protocol above remains the supported native verification path.
 
 ## Historical live baseline
 

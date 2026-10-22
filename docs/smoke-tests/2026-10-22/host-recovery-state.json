@@ -1,0 +1,20 @@
+{
+  "vault": "/private/tmp/JournalMedia-live-20261022-a",
+  "pending": {
+    "version": 1,
+    "id": "24c686e7-3731-41cb-bb11-3c900de9d40e",
+    "dataPath": ".journal-media/staging/24c686e7-3731-41cb-bb11-3c900de9d40e.png",
+    "transactionPath": ".journal-media/staging/24c686e7-3731-41cb-bb11-3c900de9d40e.json",
+    "sourcePath": "2027/01/2027-01-04.md",
+    "journalDate": "2027-01-04",
+    "importedAt": "2026-10-22T15:23:41.209Z",
+    "name": "sample.png",
+    "lastModified": null,
+    "method": "file",
+    "format": "png"
+  },
+  "recordId": "b38aea05-3d21-42b8-ab6b-e363274a8133",
+  "token": "2b507ecd-dd36-4aeb-b1a7-fdfe2e3a9d74",
+  "expectedRecordCount": 3,
+  "savedAt": "2026-10-22T15:23:41.221Z"
+}

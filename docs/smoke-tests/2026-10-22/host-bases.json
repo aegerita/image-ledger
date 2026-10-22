@@ -1,0 +1,32 @@
+{
+  "vault": "/private/tmp/JournalMedia-live-20261022-a",
+  "startedAt": "2026-10-22T15:29:52.091Z",
+  "mode": "Actual Bases contenteditable controls and link DOM handlers; programmatic events, not native mouse input",
+  "status": "PASS_BASES_EDIT_AND_IMAGE_LINK",
+  "checks": [
+    {
+      "kind": "Bases description edit",
+      "text": "Bases smoke JPEG.",
+      "record": "2026/image-records/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.md",
+      "notes": [
+        "2026/10/2026-10-17.md",
+        "2027/01/2027-01-04.md"
+      ]
+    },
+    {
+      "kind": "Bases description edit",
+      "text": "Edited synthetic JPEG.",
+      "record": "2026/image-records/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.md",
+      "notes": [
+        "2026/10/2026-10-17.md",
+        "2027/01/2027-01-04.md"
+      ]
+    },
+    {
+      "kind": "Base image link",
+      "viewType": "image",
+      "file": "2026/images/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.jpg"
+    }
+  ],
+  "finishedAt": "2026-10-22T15:29:56.188Z"
+}

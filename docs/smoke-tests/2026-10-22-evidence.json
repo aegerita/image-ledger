@@ -1,0 +1,340 @@
+{
+  "title": "Journal Media live smoke-test results",
+  "checkedAt": "2026-10-22T15:35:02.750Z",
+  "dateLocal": "2026-10-22",
+  "obsidianVersion": "1.14.4 (root observation)",
+  "validation": "PASS for executed native-capture and real-host checks; full native smoke protocol NOT COMPLETED",
+  "sourceRepository": "/Users/aegerita/Coding/obsidian-journal-media",
+  "sourceCommit": "550631722417826ef8985e4363c90f32935eb392",
+  "methodSummary": {
+    "nativeOS": [
+      "JPEG import through native file picker and live caption UI",
+      "Preview copy followed by native clipboard paste"
+    ],
+    "programmaticRealHost": [
+      "Duplicate file flow through loaded plugin captureFiles and actual caption modal handlers",
+      "Record modify event synchronization",
+      "Actual Bases contenteditable edits, image-link and journal-link handlers",
+      "Synthetic editor-drop event and workspace note switch",
+      "Describe later and actual edit-description command in fresh B",
+      "Synthetic ClipboardEvent through registered paste handler, actual app reload with caption open, recovery command and modal",
+      "Actual audit command and visible notice DOM evidence"
+    ],
+    "mocks": "None; loaded plugin, actual VaultIO/editor, real widgets and modal handlers used."
+  },
+  "protocolCoverage": [
+    {
+      "step": 1,
+      "result": "PASS",
+      "mode": "Native OS file import plus independent filesystem checks"
+    },
+    {
+      "step": 2,
+      "result": "PASS_CAPTURE_AND_LATER_CAPTION",
+      "mode": "Native Preview paste; later caption completed via actual command/modal DOM handlers"
+    },
+    {
+      "step": 3,
+      "result": "PASS_HOST_INTEGRATION",
+      "mode": "Plugin file API and real modal; native duplicate picker gesture NOT RUN"
+    },
+    {
+      "step": 4,
+      "result": "PASS_REAL_BASES_WIDGETS",
+      "mode": "Programmatic input/blur/click on actual Bases widgets; fields, both notes, XMP, image and journal targets verified"
+    },
+    {
+      "step": 5,
+      "result": "PASS_SYNTHETIC_DROP_HANDLER_AND_NOTE_SWITCH",
+      "mode": "Generated editor-drop event and workspace API; OS drag/drop NOT RUN"
+    },
+    {
+      "step": 6,
+      "result": "PASS_FRESH_B",
+      "mode": "Generated paste event, actual Describe later, actual edit-description command and real modal handlers"
+    },
+    {
+      "step": 7,
+      "result": "PASS_FRESH_B_OPEN_CAPTION_RELOAD_RECOVERY",
+      "mode": "Generated paste staged through actual registered handler, actual app reload and recovery; UUID reused and staging cleared"
+    },
+    {
+      "step": 8,
+      "result": "PASS",
+      "mode": "Actual audit command/notice plus independent filesystem counts"
+    }
+  ],
+  "nativeGaps": [
+    {
+      "item": "Native OS drag/drop",
+      "status": "NOT RUN",
+      "reason": "CUA stale picker/noWindowsAvailable prevented reliable OS gesture control; actual registered drop handler passed using a synthetic event."
+    },
+    {
+      "item": "Native picker duplicate import gesture",
+      "status": "NOT RUN",
+      "reason": "Native picker control was unreliable; duplicate behavior passed through the loaded plugin file-capture API and actual modal."
+    },
+    {
+      "item": "Native mouse and keyboard variants of remaining DOM/API-controlled cases",
+      "status": "NOT RUN",
+      "reason": "Actual Bases widgets, caption buttons, note switching and caption-open interruption were exercised programmatically; native gestures were not verified."
+    }
+  ],
+  "clipboardLimit": "Preview produced a distinct 169-byte 3x2 PNG from the 815-byte EXIF-oriented JPEG. Saved clipboard payload has no capture timestamp/camera/orientation. Record and payload agree; no pre-import raw clipboard snapshot proves received-byte identity. Native source-file metadata preservation is proven only for file import.",
+  "vaults": {
+    "A": {
+      "vault": "/private/tmp/JournalMedia-live-20261022-a",
+      "recordCount": 3,
+      "managedPayloadCount": 3,
+      "pendingDescriptions": 0,
+      "missingPayloads": 0,
+      "stagingFiles": [],
+      "records": [
+        {
+          "id": "aa1b4fb2-ab81-4079-ac25-86dfbedccdf9",
+          "imagePath": "2026/images/aa1b4fb2-ab81-4079-ac25-86dfbedccdf9.png",
+          "recordPath": "2026/image-records/aa1b4fb2-ab81-4079-ac25-86dfbedccdf9.md",
+          "sidecarPath": "2026/images/aa1b4fb2-ab81-4079-ac25-86dfbedccdf9.xmp",
+          "sha256": "548ab9dd71f90ebd0a6b265b896132aed09ab03d9449918fbf6b6fdc0a16540d",
+          "bytes": 169,
+          "format": "png",
+          "description": "Native clipboard image.",
+          "captionStatus": "confirmed",
+          "ingestMethod": "clipboard",
+          "journalDate": "2026-10-17",
+          "journalEntries": [
+            "2026/10/2026-10-17.md"
+          ],
+          "metadata": {
+            "capturedAt": null,
+            "captureTimeOffset": null,
+            "captureTimeStatus": "missing_from_received_file",
+            "width": 3,
+            "height": 2,
+            "orientation": null
+          },
+          "embedChecks": [
+            {
+              "note": "2026/10/2026-10-17.md",
+              "embed": "![Native clipboard image.](../images/aa1b4fb2-ab81-4079-ac25-86dfbedccdf9.png)",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "id": "b38aea05-3d21-42b8-ab6b-e363274a8133",
+          "imagePath": "2026/images/b38aea05-3d21-42b8-ab6b-e363274a8133.png",
+          "recordPath": "2026/image-records/b38aea05-3d21-42b8-ab6b-e363274a8133.md",
+          "sidecarPath": "2026/images/b38aea05-3d21-42b8-ab6b-e363274a8133.xmp",
+          "sha256": "3f47bdd858d72df901f9660091ced2d9d4dab15447ee5a3e1b9910ea2d74b7b6",
+          "bytes": 77,
+          "format": "png",
+          "description": "Recovered synthetic PNG.",
+          "captionStatus": "confirmed",
+          "ingestMethod": "drop",
+          "journalDate": "2026-10-17",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ],
+          "metadata": {
+            "capturedAt": null,
+            "captureTimeOffset": null,
+            "captureTimeStatus": "missing_from_received_file",
+            "width": 2,
+            "height": 3,
+            "orientation": null
+          },
+          "embedChecks": [
+            {
+              "note": "2026/10/2026-10-17.md",
+              "embed": "![Recovered synthetic PNG.](../images/b38aea05-3d21-42b8-ab6b-e363274a8133.png)",
+              "count": 1
+            },
+            {
+              "note": "2027/01/2027-01-04.md",
+              "embed": "![Recovered synthetic PNG.](../../2026/images/b38aea05-3d21-42b8-ab6b-e363274a8133.png)",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "id": "cf917b1e-4e17-41b1-9fbe-3da712e7cd8d",
+          "imagePath": "2026/images/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.jpg",
+          "recordPath": "2026/image-records/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.md",
+          "sidecarPath": "2026/images/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.xmp",
+          "sha256": "692cbc270ec1af8a03a159cfd8b5cbf548e9c0a5e57ab2bd6881f374b3f8460f",
+          "bytes": 815,
+          "format": "jpg",
+          "description": "Edited synthetic JPEG.",
+          "captionStatus": "confirmed",
+          "ingestMethod": "file",
+          "journalDate": "2026-10-17",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ],
+          "metadata": {
+            "capturedAt": "2026-10-17T12:34:56.0074-04:00",
+            "captureTimeOffset": "-04:00",
+            "captureTimeStatus": "source_offset",
+            "width": 2,
+            "height": 3,
+            "orientation": 6
+          },
+          "embedChecks": [
+            {
+              "note": "2026/10/2026-10-17.md",
+              "embed": "![Edited synthetic JPEG.](../images/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.jpg)",
+              "count": 1
+            },
+            {
+              "note": "2027/01/2027-01-04.md",
+              "embed": "![Edited synthetic JPEG.](../../2026/images/cf917b1e-4e17-41b1-9fbe-3da712e7cd8d.jpg)",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    "B": {
+      "vault": "/private/tmp/JournalMedia-live-20261022-b",
+      "recordCount": 1,
+      "managedPayloadCount": 1,
+      "pendingDescriptions": 0,
+      "missingPayloads": 0,
+      "stagingFiles": [],
+      "records": [
+        {
+          "id": "9268adb4-2396-4aa2-95eb-e10bec508d67",
+          "imagePath": "2026/images/9268adb4-2396-4aa2-95eb-e10bec508d67.png",
+          "recordPath": "2026/image-records/9268adb4-2396-4aa2-95eb-e10bec508d67.md",
+          "sidecarPath": "2026/images/9268adb4-2396-4aa2-95eb-e10bec508d67.xmp",
+          "sha256": "3f47bdd858d72df901f9660091ced2d9d4dab15447ee5a3e1b9910ea2d74b7b6",
+          "bytes": 77,
+          "format": "png",
+          "description": "Recovered after open-caption reload.",
+          "captionStatus": "confirmed",
+          "ingestMethod": "clipboard",
+          "journalDate": "2026-10-17",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ],
+          "metadata": {
+            "capturedAt": null,
+            "captureTimeOffset": null,
+            "captureTimeStatus": "missing_from_received_file",
+            "width": 2,
+            "height": 3,
+            "orientation": null
+          },
+          "embedChecks": [
+            {
+              "note": "2026/10/2026-10-17.md",
+              "embed": "![Recovered after open-caption reload.](../images/9268adb4-2396-4aa2-95eb-e10bec508d67.png)",
+              "count": 1
+            },
+            {
+              "note": "2027/01/2027-01-04.md",
+              "embed": "![Recovered after open-caption reload.](../../2026/images/9268adb4-2396-4aa2-95eb-e10bec508d67.png)",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "buildArtifacts": {
+    "main.js": {
+      "bytes": 158717,
+      "sha256": {
+        "source": "ed941e1116ae8b7813338bd677ac61b85b4919d468f8edf3b42a94ae198b7fb0",
+        "A": "ed941e1116ae8b7813338bd677ac61b85b4919d468f8edf3b42a94ae198b7fb0",
+        "B": "ed941e1116ae8b7813338bd677ac61b85b4919d468f8edf3b42a94ae198b7fb0"
+      },
+      "allEqual": true
+    },
+    "manifest.json": {
+      "bytes": 297,
+      "sha256": {
+        "source": "8b26b922fcb56207c08f945f091c3196c6e81f6dba283fa73319e11de95caa0d",
+        "A": "8b26b922fcb56207c08f945f091c3196c6e81f6dba283fa73319e11de95caa0d",
+        "B": "8b26b922fcb56207c08f945f091c3196c6e81f6dba283fa73319e11de95caa0d"
+      },
+      "allEqual": true
+    },
+    "styles.css": {
+      "bytes": 524,
+      "sha256": {
+        "source": "70cf64b8c9d3656465cea1f6b0c5618f3573a7035e448342d2f27b2547d73cef",
+        "A": "70cf64b8c9d3656465cea1f6b0c5618f3573a7035e448342d2f27b2547d73cef",
+        "B": "70cf64b8c9d3656465cea1f6b0c5618f3573a7035e448342d2f27b2547d73cef"
+      },
+      "allEqual": true
+    }
+  },
+  "assertions": [
+    "All four image payloads match record SHA-256 and byte count",
+    "Re-extracted payload metadata equals record metadata",
+    "Frontmatter and portable JSON snapshots agree",
+    "XMP UUID, current caption and optional capture timestamp agree",
+    "Exactly one current embed per recorded note link; no stale alt labels",
+    "All current captions confirmed; no descriptions pending",
+    "No missing or orphan managed payloads",
+    "Both staging directories empty",
+    "Source/A/B runtime build artifacts byte-identical"
+  ],
+  "auditNoticeA": "3 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+  "evidenceFiles": [
+    "stage-01-jpeg-import.json",
+    "stage-02-native-clipboard.json",
+    "host-integration-live1.json",
+    "host-recovery-live1.json",
+    "host-bases.json",
+    "host-finish-a-2.json",
+    "fresh-b-prepare-live1.json",
+    "fresh-b-recover-live1.json",
+    "final-audit-a.json",
+    "final-audit-b.json",
+    "host-finish-a.json",
+    "host-recovery-state.json",
+    "fresh-b-reload-state.json"
+  ],
+  "preservedFailedHarnessAttempt": {
+    "file": "host-finish-a.json",
+    "status": "FAIL",
+    "error": "Error: Timed out: Base journal link\n    at wait (eval at <anonymous> (eval at <anonymous> (app://obsidian.md/app.js:1:1638663)), <anonymous>:7:142)\n    at async eval (eval at <anonymous> (eval at <anonymous> (app://obsidian.md/app.js:1:1638663)), <anonymous>:19:23)",
+    "interpretation": "Original selector expected .md suffix; actual rendered Bases journal links are extensionless. Corrected selector passes in host-finish-a-2.json. Original failure retained."
+  },
+  "fullNativeSmokeCompleted": false,
+  "unitAndBuildChecks": {
+    "command": "npm test",
+    "result": "PASS",
+    "tests": 35,
+    "failed": 0,
+    "exitCode": 0,
+    "verifiedBy": "root agent command run",
+    "reportedRunTimeUtc": "2026-10-22 around 15:32 UTC",
+    "helperRetested": false
+  },
+  "finalAuditReceipts": {
+    "final-audit-a.json": {
+      "vault": "/private/tmp/JournalMedia-live-20261022-a",
+      "startedAt": "2026-10-22T15:34:12.674Z",
+      "status": "PASS",
+      "notice": "3 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+      "finishedAt": "2026-10-22T15:34:13.188Z"
+    },
+    "final-audit-b.json": {
+      "vault": "/private/tmp/JournalMedia-live-20261022-b",
+      "startedAt": "2026-10-22T15:34:12.882Z",
+      "status": "PASS",
+      "notice": "1 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+      "finishedAt": "2026-10-22T15:34:13.188Z"
+    }
+  },
+  "auditNoticeB": "1 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+  "rawReceiptsDirectory": "2026-10-22/"
+}

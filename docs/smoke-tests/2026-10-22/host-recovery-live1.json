@@ -1,0 +1,53 @@
+{
+  "phase": "recovery",
+  "runId": "live1",
+  "vault": "/private/tmp/JournalMedia-live-20261022-a",
+  "startedAt": "2026-10-22T15:25:52.111Z",
+  "status": "PASS_RECOVERY_AND_AUDIT",
+  "checks": [
+    {
+      "id": "07",
+      "title": "Recovery after plugin/application reload",
+      "mode": "Real persisted staging, reloaded plugin, recovery command and real caption modal DOM handler",
+      "status": "PASS",
+      "startedAt": "2026-10-22T15:25:52.114Z",
+      "details": {
+        "pendingId": "24c686e7-3731-41cb-bb11-3c900de9d40e",
+        "reusedRecordId": "b38aea05-3d21-42b8-ab6b-e363274a8133",
+        "recordCount": 3,
+        "captionStatus": "confirmed",
+        "stagingFiles": [],
+        "reloadProof": "Loaded plugin object no longer carries pre-reload token; exact application reload method is recorded by root."
+      },
+      "finishedAt": "2026-10-22T15:25:52.257Z"
+    },
+    {
+      "id": "08",
+      "title": "Final record and staging audit",
+      "mode": "Actual audit command plus independent filesystem assertions",
+      "status": "PASS",
+      "startedAt": "2026-10-22T15:25:52.257Z",
+      "details": {
+        "recordCount": 3,
+        "missingFiles": 0,
+        "interruptedCaptures": 0,
+        "descriptionsPending": [
+          {
+            "id": "aa1b4fb2-ab81-4079-ac25-86dfbedccdf9",
+            "description": "Description pending"
+          }
+        ],
+        "noticeVisual": "Root can verify visible notice; this check asserts command dispatch and filesystem counts."
+      },
+      "finishedAt": "2026-10-22T15:25:52.287Z"
+    }
+  ],
+  "limits": [
+    "App API captureFiles calls use the actual loaded plugin, editor context and VaultIO; they are not native OS import or drop actions.",
+    "Caption controls are the real Obsidian modal DOM handlers activated programmatically; askDescription is never overridden.",
+    "Record-property synchronization is tested through a file edit; Bases UI cell editing is not asserted.",
+    "Note switching uses the workspace API while a real caption modal is open.",
+    "Recovery setup uses the real MediaStore.stage API; it does not simulate a native paste interruption."
+  ],
+  "finishedAt": "2026-10-22T15:25:52.287Z"
+}

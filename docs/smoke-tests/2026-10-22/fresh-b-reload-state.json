@@ -1,0 +1,20 @@
+{
+  "vault": "/private/tmp/JournalMedia-live-20261022-b",
+  "token": "3dd496c2-14a0-4857-a4f5-e7c69ba60da2",
+  "pending": {
+    "version": 1,
+    "id": "5c2a48b2-c57f-4cdd-9bf7-cfe4b33ac9db",
+    "dataPath": ".journal-media/staging/5c2a48b2-c57f-4cdd-9bf7-cfe4b33ac9db.png",
+    "transactionPath": ".journal-media/staging/5c2a48b2-c57f-4cdd-9bf7-cfe4b33ac9db.json",
+    "sourcePath": "2027/01/2027-01-04.md",
+    "journalDate": "2027-01-04",
+    "importedAt": "2026-10-22T15:30:25.211Z",
+    "name": "sample.png",
+    "lastModified": null,
+    "method": "clipboard",
+    "format": "png"
+  },
+  "recordId": "9268adb4-2396-4aa2-95eb-e10bec508d67",
+  "captionBeforeReload": "Completed through edit-description command.",
+  "savedAt": "2026-10-22T15:30:26.191Z"
+}

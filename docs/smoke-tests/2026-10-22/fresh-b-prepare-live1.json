@@ -1,0 +1,46 @@
+{
+  "phase": "prepare",
+  "runId": "live1",
+  "vault": "/private/tmp/JournalMedia-live-20261022-b",
+  "startedAt": "2026-10-22T15:30:21.166Z",
+  "status": "AWAITING_APP_RELOAD_AND_RECOVERY",
+  "checks": [
+    {
+      "id": "describe-later-fresh-image",
+      "status": "PASS",
+      "checkedAt": "2026-10-22T15:30:23.189Z",
+      "details": {
+        "recordId": "9268adb4-2396-4aa2-95eb-e10bec508d67",
+        "captionStatus": "pending",
+        "ingestMethod": "clipboard"
+      }
+    },
+    {
+      "id": "actual-edit-description-command",
+      "status": "PASS",
+      "checkedAt": "2026-10-22T15:30:25.190Z",
+      "details": {
+        "recordId": "9268adb4-2396-4aa2-95eb-e10bec508d67",
+        "description": "Completed through edit-description command.",
+        "captionStatus": "confirmed"
+      }
+    },
+    {
+      "id": "paste-staged-with-real-modal-open",
+      "status": "PASS",
+      "checkedAt": "2026-10-22T15:30:26.191Z",
+      "details": {
+        "pendingId": "5c2a48b2-c57f-4cdd-9bf7-cfe4b33ac9db",
+        "recordId": "9268adb4-2396-4aa2-95eb-e10bec508d67",
+        "modalOpen": true,
+        "sourceNote": "2027/01/2027-01-04.md"
+      }
+    }
+  ],
+  "limits": [
+    "Clipboard input is a generated ClipboardEvent/DataTransfer passed through the real registered editor-paste handler, not an OS clipboard paste.",
+    "Caption buttons and edit-description controls are real loaded modal DOM handlers activated programmatically; no methods are mocked or replaced.",
+    "Reload uses the actual app:reload command after a real paste is staged and its actual caption modal is open."
+  ],
+  "finishedAt": "2026-10-22T15:30:26.192Z"
+}

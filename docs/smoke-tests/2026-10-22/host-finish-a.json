@@ -1,0 +1,9 @@
+{
+  "vault": "/private/tmp/JournalMedia-live-20261022-a",
+  "startedAt": "2026-10-22T15:31:37.845Z",
+  "mode": "Real Bases journal-link and edit-description modal DOM handlers; programmatic actions",
+  "status": "FAIL",
+  "checks": [],
+  "error": "Error: Timed out: Base journal link\n    at wait (eval at <anonymous> (eval at <anonymous> (app://obsidian.md/app.js:1:1638663)), <anonymous>:7:142)\n    at async eval (eval at <anonymous> (eval at <anonymous> (app://obsidian.md/app.js:1:1638663)), <anonymous>:19:23)",
+  "finishedAt": "2026-10-22T15:31:48.650Z"
+}

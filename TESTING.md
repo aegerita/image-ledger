@@ -1,27 +1,76 @@
 # Verification
 
-## Automated checks
+All future live tests use a generated synthetic vault. Never test in the personal Journal vault or copy its notes, plugin settings, or credentials into a test vault.
 
-Run `npm test` and `npm run build`. Tests use generated/fixed images and temporary filesystem vaults. They verify received-byte identity, EXIF offsets and missing metadata, UUID reuse, safe caption encoding, sidecar/record consistency, write failures and capture recovery.
+## Unit and filesystem checks
 
-## Live Obsidian smoke test
+```sh
+npm test
+```
 
-Use a dedicated test note in the current journal rather than changing an existing diary entry.
+This builds the plugin and runs 35 Node tests. Coverage includes image validation, byte identity and EXIF, records/XMP, captions, anchors, duplicate reuse, interrupted writes/recovery, and fresh-vault setup. Temporary filesystem tests do not exercise the Obsidian UI.
 
-1. Enable Journal Media and disable the competing Imgur paste handler.
-2. Paste a synthetic JPEG/PNG with a known SHA-256 into the test note.
-3. Enter a description; confirm the preview, Markdown, UUID image, XMP and record.
-4. Paste the same bytes again. Confirm the same UUID and no second image payload.
-5. Open `journal-images.base`; confirm the record, description, date fields and working image/journal links.
-6. Edit a description in Bases; confirm the record snapshot, sidecar and managed alt text agree.
-7. Switch notes while a caption is open; confirm insertion remains in the original note.
-8. Restart/reload with a staged capture; confirm recovery makes the record and image available without overwriting an existing file.
+## Create a separate test vault
 
-Actual phone clipboard metadata depends on the sending application and transfer method. The synthetic-image test proves plugin preservation, not that every phone transfer supplies original metadata.
+```sh
+npm run test:vault
+# Optional: choose a new directory whose parent already exists.
+npm run test:vault -- --vault /absolute/path/to/new-test-vault
+```
 
-## Recorded live results
+The default creates a unique `test-vaults/JournalMedia-*` folder inside the repository, ignored by Git. Each run builds and copies only the current plugin artifacts, two generated image fixtures, two synthetic notes, and isolated Obsidian settings. Existing folders, files, and symlinks are refused without changes; there is no reset mode.
 
-Verified on 2026-10-17 in the user's Journal vault, Obsidian 1.14.4 on macOS:
+In Obsidian, choose **File > Open Vault > Open folder as vault** and select the printed folder. Allow community plugins in this synthetic vault and enable only the bundled **Journal Media** plugin. Do not install it into the personal journal for testing. Open `2026/10/2026-10-17.md`.
+
+## Computer-use protocol
+
+Use this protocol for live Obsidian checks. Start with a fresh generated vault. Record the vault path and Obsidian version before any action. Verify the active window is the synthetic vault before each edit; mark a blocked action **NOT RUN** rather than redirecting it to another vault.
+
+1. Import `fixtures/sample-exif.jpg` using **Journal Media: Import JPEG or PNG** into `2026/10/2026-10-17.md`. Save `Synthetic JPEG.`. Confirm its preview, local embed, UUID image, XMP, and record. The record must report `captured_at: "2026-10-17T12:34:56.0074-04:00"` and a SHA-256 matching the fixture.
+2. Copy that generated image from an image viewer and paste into the note using the native clipboard. Save a caption. Confirm the received image displays and its record matches its saved payload hash. If the clipboard supplies unchanged bytes, confirm UUID reuse; if it transforms the image, record that difference rather than claiming byte preservation from the source.
+3. Import the original `sample-exif.jpg` into `2027/01/2027-01-04.md`. Confirm the same UUID, one payload with the original fixture hash, and both note links in the record. Use the identical source file for this duplicate check.
+4. Open **Journal Media: Open image library**. Edit the JPEG description through the Bases table to `Edited synthetic JPEG.`. Confirm the record properties, portable JSON snapshot, XMP, and generated alt text in both notes agree; open the image and journal links.
+5. Drag `fixtures/sample.png` from the file manager into the first note. While its caption is open, switch to the second note if workspace navigation permits, then save `Synthetic PNG.`. If the modal blocks navigation, record the note-switch case as NOT RUN. Confirm PNG bytes match the fixture, insertion stayed in the first note, and the second note did not gain that PNG embed.
+6. Create and open another fresh generated vault for this case and steps 7–8. Import `sample.png` and choose **Describe later**. Confirm the payload and record remain, `caption_status` is `pending`, and **Edit image description** can complete it. An already confirmed duplicate keeps its existing caption instead of becoming pending.
+7. Paste a fixture, leave its caption open, and reload Obsidian before saving. After reload, run **Journal Media: Recover interrupted image captures** and save a caption. Confirm the recovered embed, intact matching payload, and empty `.journal-media/staging/`. Recovering a duplicate must reuse its UUID.
+8. Run **Journal Media: Check image records**. Confirm zero missing files and zero interrupted captures; explain any descriptions intentionally left pending.
+
+For a file-preserving import or drop, compare both SHA-256 values directly (replace the paths and UUID):
+
+```sh
+shasum -a 256 "/absolute/test-vault/fixtures/sample-exif.jpg" "/absolute/test-vault/2026/images/<uuid>.jpg"
+```
+
+Both values must match each other, the record's `sha256`, and the fixture hash in `.journal-media-test-vault.json`. Repeat for the PNG. Native clipboard sources may transform bytes or strip EXIF before the plugin receives them; report that boundary explicitly.
+
+## Evidence checklist
+
+Record each item as **PASS**, **FAIL**, or **NOT RUN**, with the failure or omission reason:
+
+- Date, Obsidian version, generated vault path, and build commit.
+- Unit/build command result and test count.
+- Each protocol step above, with its result and supporting screenshot or file check.
+- Image/record/sidecar paths, source and saved hashes, duplicate payload count, and recovery staging count.
+- Native clipboard, native drop, Bases UI editing, Describe later, and reload method exercised.
+
+Keep screenshots and a short results note with the test vault. A blocked action, timeout, or missing evidence is not a pass. Do not combine historical evidence with current results.
+
+## Current validation
+
+Verified on 2026-10-21:
+
+- PASS: `npm test` builds successfully and passes 35 tests.
+- PASS: a generated synthetic vault was created and opened in Obsidian 1.14.4.
+- FAILED EXPERIMENT: CLI host automation did not reliably locate the caption dialog across separate Obsidian windows. The installed application also reported outdated installer support for the CLI.
+- NOT RUN: a complete live functional pass through the protocol above.
+
+The experimental host runner is not included. Inconsistent multiwindow CLI control prevented dependable results; automated host tests can be added after stable application control is available. The computer-use protocol remains the supported live verification path.
+
+## Historical live baseline
+
+The following is retained evidence from before isolated-vault setup. It is not authorization or a procedure for future testing in the journal.
+
+Historical verification on 2026-10-17 in the user's Journal vault, Obsidian 1.14.4 on macOS:
 
 - Production build and 33 automated tests pass.
 - Live synthetic JPEG paste created a UUID file, descriptive local embed, linked record and XMP.

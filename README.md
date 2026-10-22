@@ -63,7 +63,7 @@ Git exclusions do not configure Obsidian Sync, iCloud, Dropbox or other sync ser
 
 ## Verification
 
-`npm test` covers JPEG/PNG validation, byte hashes and metadata, caption escaping, Markdown/XMP records, Bases edits, duplicate reuse, insertion anchors, staging recovery and failed writes. See `TESTING.md` for the live Obsidian smoke-test procedure and recorded results.
+`npm test` builds the plugin and runs unit/filesystem checks, including safe test-vault setup. Use `npm run test:vault` to create a fresh synthetic vault, open it in Obsidian, and follow the computer-use protocol in [TESTING.md](TESTING.md). Never use the personal journal for testing. TESTING.md records checks, results, and live verification limits.
 
 ## License
 

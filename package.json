@@ -9,7 +9,8 @@
     "dev": "node esbuild.config.mjs --watch",
     "test": "npm run build && node --import tsx --test tests/*.test.ts",
     "test:vault": "npm run build && node --import tsx scripts/test-vault.ts",
-    "install:vault": "node scripts/install.mjs"
+    "install:vault": "node scripts/install.mjs",
+    "test:obsidian": "node --import tsx scripts/obsidian-smoke.ts"
   },
   "dependencies": {
     "exifr": "7.1.3"

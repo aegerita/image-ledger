@@ -1,0 +1,199 @@
+{
+  "dateLocal": "2026-10-23",
+  "timezone": "America/Toronto",
+  "runtimeSourceCommit": "f9039f95cf77febd9abb4890ca7426d1338c95bf",
+  "unitTests": {
+    "passed": 51,
+    "failed": 0
+  },
+  "deadlineMs": 90000,
+  "nativeOsGesturesTested": false,
+  "runs": [
+    {
+      "runId": "86d1e3da-0e96-4ce0-ad63-aa4c2ed0c50d",
+      "status": "PASS",
+      "vault": "/private/tmp/journal-media-host-em4qbp5l/test-vaults/JournalMedia-0uYX8Y",
+      "durationMs": 13620,
+      "files": {
+        "records": 2,
+        "pending": 0,
+        "missing": 0,
+        "staging": 0
+      },
+      "methods": "Actual Obsidian plugin/editor/modal/Bases controls; generated paste/drop events. Native OS gestures not tested.",
+      "receipts": [
+        "main.json",
+        "recovery.json"
+      ],
+      "obsidianVersion": "1.14.5",
+      "checks": [
+        {
+          "name": "JPEG file import and EXIF",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:00.784Z",
+          "finishedAt": "2026-10-24T02:50:00.921Z"
+        },
+        {
+          "name": "Cross-year duplicate reuse",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:00.921Z",
+          "finishedAt": "2026-10-24T02:50:01.032Z"
+        },
+        {
+          "name": "Actual Bases description editor and links",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:01.032Z",
+          "finishedAt": "2026-10-24T02:50:11.065Z"
+        },
+        {
+          "name": "Drop handler, note switch and Describe later",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:11.065Z",
+          "finishedAt": "2026-10-24T02:50:11.187Z"
+        },
+        {
+          "name": "Edit image description command",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:11.188Z",
+          "finishedAt": "2026-10-24T02:50:11.326Z"
+        },
+        {
+          "name": "Paste handler staged with caption open",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:11.326Z",
+          "finishedAt": "2026-10-24T02:50:11.386Z"
+        },
+        {
+          "name": "Recover real caption-open paste after app reload",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:12.046Z",
+          "finishedAt": "2026-10-24T02:50:12.231Z"
+        },
+        {
+          "name": "Final records and actual audit notice",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:50:12.231Z",
+          "finishedAt": "2026-10-24T02:50:12.283Z"
+        }
+      ],
+      "audit": "2 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+      "payloads": [
+        {
+          "id": "e9bd4360-e70a-40f8-a377-5eee9c02b263",
+          "sha256": "3f47bdd858d72df901f9660091ced2d9d4dab15447ee5a3e1b9910ea2d74b7b6",
+          "bytes": 77,
+          "format": "png",
+          "captionStatus": "confirmed",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ]
+        },
+        {
+          "id": "2947a961-d7a9-4f28-b56d-6fef1ca34779",
+          "sha256": "692cbc270ec1af8a03a159cfd8b5cbf548e9c0a5e57ab2bd6881f374b3f8460f",
+          "bytes": 815,
+          "format": "jpg",
+          "captionStatus": "confirmed",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ]
+        }
+      ]
+    },
+    {
+      "runId": "9afd478f-3f0b-4bac-b797-180d457efb6b",
+      "status": "PASS",
+      "vault": "/private/tmp/journal-media-host-em4qbp5l/test-vaults/JournalMedia-mSFfmG",
+      "durationMs": 4529,
+      "files": {
+        "records": 2,
+        "pending": 0,
+        "missing": 0,
+        "staging": 0
+      },
+      "methods": "Actual Obsidian plugin/editor/modal/Bases controls; generated paste/drop events. Native OS gestures not tested.",
+      "receipts": [
+        "main.json",
+        "recovery.json"
+      ],
+      "obsidianVersion": "1.14.5",
+      "checks": [
+        {
+          "name": "JPEG file import and EXIF",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:02.132Z",
+          "finishedAt": "2026-10-24T02:51:02.267Z"
+        },
+        {
+          "name": "Cross-year duplicate reuse",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:02.267Z",
+          "finishedAt": "2026-10-24T02:51:02.377Z"
+        },
+        {
+          "name": "Actual Bases description editor and links",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:02.378Z",
+          "finishedAt": "2026-10-24T02:51:03.296Z"
+        },
+        {
+          "name": "Drop handler, note switch and Describe later",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:03.296Z",
+          "finishedAt": "2026-10-24T02:51:03.409Z"
+        },
+        {
+          "name": "Edit image description command",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:03.410Z",
+          "finishedAt": "2026-10-24T02:51:03.547Z"
+        },
+        {
+          "name": "Paste handler staged with caption open",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:03.548Z",
+          "finishedAt": "2026-10-24T02:51:03.608Z"
+        },
+        {
+          "name": "Recover real caption-open paste after app reload",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:04.308Z",
+          "finishedAt": "2026-10-24T02:51:04.485Z"
+        },
+        {
+          "name": "Final records and actual audit notice",
+          "status": "PASS",
+          "startedAt": "2026-10-24T02:51:04.486Z",
+          "finishedAt": "2026-10-24T02:51:04.538Z"
+        }
+      ],
+      "audit": "2 image records \u00b7 0 descriptions pending \u00b7 0 missing files \u00b7 0 interrupted captures",
+      "payloads": [
+        {
+          "id": "8b02afa8-5ff9-43cb-bab2-5d09b18eb385",
+          "sha256": "692cbc270ec1af8a03a159cfd8b5cbf548e9c0a5e57ab2bd6881f374b3f8460f",
+          "bytes": 815,
+          "format": "jpg",
+          "captionStatus": "confirmed",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ]
+        },
+        {
+          "id": "21d04b44-2e63-44da-a75e-1eed0a68c4ed",
+          "sha256": "3f47bdd858d72df901f9660091ced2d9d4dab15447ee5a3e1b9910ea2d74b7b6",
+          "bytes": 77,
+          "format": "png",
+          "captionStatus": "confirmed",
+          "journalEntries": [
+            "2026/10/2026-10-17.md",
+            "2027/01/2027-01-04.md"
+          ]
+        }
+      ]
+    }
+  ]
+}

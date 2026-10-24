@@ -8,7 +8,21 @@ All future live tests use a generated synthetic vault. Never test in the persona
 npm test
 ```
 
-This builds the plugin and runs 35 Node tests. Coverage includes image validation, byte identity and EXIF, records/XMP, captions, anchors, duplicate reuse, interrupted writes/recovery, and fresh-vault setup. Temporary filesystem tests do not exercise the Obsidian UI.
+This builds the plugin and runs the Node tests. Coverage includes image validation, byte identity and EXIF, records/XMP, captions, anchors, duplicate reuse, interrupted writes/recovery, and fresh-vault setup. Temporary filesystem tests do not exercise the Obsidian UI.
+
+## Automated Obsidian host smoke test
+
+```sh
+npm run test:obsidian
+```
+
+Requires macOS, a running Obsidian application at `/Applications/Obsidian.app`, an initialized open vault, and its CLI enabled. The command builds the current plugin, creates and opens a fresh generated vault, and runs the checks through the loaded app. It does not use the personal journal as a test destination. Before enabling the generated vault's plugin, it verifies the CLI's exact canonical target path, marker, fixtures, plugin allowlist and current build hashes. It then uses `plugins:restrict off` only for that generated vault. This avoids its first-open trust dialog. Each host invocation checks the exact vault path again.
+
+The suite exercises file capture, cross-year duplicate reuse, actual caption dialogs, actual Bases description editing and image/journal links, generated paste/drop events, note switching, Describe later, the edit-description command, and recovery after a real app reload with a caption still open. It independently checks the final payload hashes, metadata, records, snapshots, XMP, embeds and staging files. A clean audit notice must also appear.
+
+The whole command has a **90-second deadline**, including its build. A missing dialog, failed assertion, unavailable CLI or wrong vault fails with a nonzero exit. There is no fallback into computer control. The printed generated vault and JSON receipts are retained for inspection, including failures.
+
+This is a **real-host integration test**, not a native OS gesture test. Generated clipboard/drop events do not test macOS clipboard conversion or Finder drag gestures. Use the manual protocol below for those boundaries. The runner uses experimental/private app and plugin APIs plus Bases DOM selectors; an incompatible Obsidian update should fail promptly and may require a runner update.
 
 ## Create a separate test vault
 
@@ -56,6 +70,17 @@ Record each item as **PASS**, **FAIL**, or **NOT RUN**, with the failure or omis
 Keep screenshots and a short results note with the test vault. A blocked action, timeout, or missing evidence is not a pass. Do not combine historical evidence with current results.
 
 ## Current validation
+
+Verified on 2026-10-23 in Obsidian 1.14.5:
+
+- PASS: `npm test` builds successfully and passes 51 tests, including 16 smoke-runner isolation, trust, receipt and timeout checks.
+- PASS: two consecutive `npm run test:obsidian` runs in fresh generated vaults, including their builds, took **13.620 seconds** and **4.529 seconds**. Both completed all eight host checks and independently verified two records, confirmed captions, matching payloads/metadata/XMP/embeds, and empty staging.
+- The first-open trust gate is handled only after verifying the new synthetic vault and its sole bundled plugin. Startup and reload require explicit readiness acknowledgments. Every run has a 90-second deadline and produces JSON receipts; no native computer-control fallback runs.
+- Native OS clipboard conversion and Finder gestures remain manual checks. The host run does not claim those boundaries passed.
+
+See [the host-runner report](docs/smoke-tests/2026-10-23-host.md) and its JSON evidence.
+
+## Previous mixed validation — 2026-10-22
 
 Verified on 2026-10-22 in two fresh synthetic vaults, Obsidian 1.14.4:
 

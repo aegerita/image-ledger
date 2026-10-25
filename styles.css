@@ -1,5 +1,5 @@
-.journal-media-description img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; margin: 0 auto 1rem; border-radius: 8px; }
-.journal-media-description input, .journal-media-picker { width: 100%; }
-.journal-media-validation { color: var(--text-error); min-height: 1.5em; margin-top: .4rem; }
-.journal-media-picker { display: grid; gap: .5rem; max-height: 400px; overflow: auto; margin-top: 1rem; }
-.journal-media-picker button { text-align: left; white-space: normal; height: auto; padding: .7rem; }
+.image-ledger-description img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; margin: 0 auto 1rem; border-radius: 8px; }
+.image-ledger-description input, .image-ledger-picker { width: 100%; }
+.image-ledger-validation { color: var(--text-error); min-height: 1.5em; margin-top: .4rem; }
+.image-ledger-picker { display: grid; gap: .5rem; max-height: 400px; overflow: auto; margin-top: 1rem; }
+.image-ledger-picker button { text-align: left; white-space: normal; height: auto; padding: .7rem; }

@@ -1,5 +1,11 @@
 # Verification
 
+## Agent testing policy
+
+The default live smoke test is **`npm run test:obsidian`**, using the Obsidian host CLI/API and programmatic DOM handlers. Computer-use tools and native GUI automation are prohibited for this project. Do not fall back to screenshots, coordinate clicks, simulated keyboard/mouse input, accessibility/AppleScript UI scripting, or Finder/clipboard gestures.
+
+If the host test is blocked or fails, fix the bounded API runner or report `FAIL` / `NOT RUN` with the actual blocker and JSON receipt. Keep the 90-second deadline. Native-only behavior outside API coverage remains explicitly unverified; do not switch to computer use to cover it. See `AGENTS.md` for the project rules.
+
 All future live tests use a generated synthetic vault. Never test in the personal Journal vault or copy its notes, plugin settings, or credentials into a test vault.
 
 ## Unit and filesystem checks
@@ -10,7 +16,7 @@ npm test
 
 This builds the plugin and runs the Node tests. Coverage includes image validation, byte identity and EXIF, records/XMP, captions, anchors, duplicate reuse, interrupted writes/recovery, and fresh-vault setup. Temporary filesystem tests do not exercise the Obsidian UI.
 
-## Automated Obsidian host smoke test
+## Default smoke test — Obsidian host API
 
 ```sh
 npm run test:obsidian
@@ -18,11 +24,11 @@ npm run test:obsidian
 
 Requires macOS, a running Obsidian application at `/Applications/Obsidian.app`, an initialized open vault, and its CLI enabled. The command builds the current plugin, creates and opens a fresh generated vault, and runs the checks through the loaded app. It does not use the personal journal as a test destination. Before enabling the generated vault's plugin, it verifies the CLI's exact canonical target path, marker, fixtures, plugin allowlist and current build hashes. It then uses `plugins:restrict off` only for that generated vault. This avoids its first-open trust dialog. Each host invocation checks the exact vault path again.
 
-The suite exercises file capture, cross-year duplicate reuse, actual caption dialogs, actual Bases description editing and image/journal links, generated paste/drop events, note switching, Describe later, the edit-description command, and recovery after a real app reload with a caption still open. It independently checks the final payload hashes, metadata, records, snapshots, XMP, embeds and staging files. A clean audit notice must also appear.
+The suite exercises flat storage from an ordinary project note, duplicate reuse from a dated note, actual caption dialogs, actual Bases description editing and image/note links, generated paste/drop events, note switching, Describe later, the edit-description command, and recovery after a real app reload with a caption still open. It independently checks schema 2 records, reference links, payload hashes, metadata, snapshots, XMP, embeds and staging files. A clean audit notice must also appear.
 
 The whole command has a **90-second deadline**, including its build. A missing dialog, failed assertion, unavailable CLI or wrong vault fails with a nonzero exit. There is no fallback into computer control. The printed generated vault and JSON receipts are retained for inspection, including failures.
 
-This is a **real-host integration test**, not a native OS gesture test. Generated clipboard/drop events do not test macOS clipboard conversion or Finder drag gestures. Use the manual protocol below for those boundaries. The runner uses experimental/private app and plugin APIs plus Bases DOM selectors; an incompatible Obsidian update should fail promptly and may require a runner update.
+This is a **real-host integration test**, not a native OS gesture test. Generated clipboard/drop events do not test macOS clipboard conversion or Finder drag gestures. Report those boundaries as unverified; do not use computer use to test them. The runner uses experimental/private app and plugin APIs plus Bases DOM selectors; an incompatible Obsidian update should fail promptly and may require a runner update.
 
 ## Create a separate test vault
 
@@ -32,51 +38,49 @@ npm run test:vault
 npm run test:vault -- --vault /absolute/path/to/new-test-vault
 ```
 
-The default creates a unique `test-vaults/JournalMedia-*` folder inside the repository, ignored by Git. Each run builds and copies only the current plugin artifacts, two generated image fixtures, two synthetic notes, and isolated Obsidian settings. Existing folders, files, and symlinks are refused without changes; there is no reset mode.
+The default creates a unique `test-vaults/ImageLedger-*` folder inside the repository, ignored by Git. Each run builds and copies only the current plugin artifacts, two generated image fixtures, two synthetic notes, and isolated Obsidian settings. Existing folders, files, and symlinks are refused without changes; there is no reset mode.
 
-In Obsidian, choose **File > Open Vault > Open folder as vault** and select the printed folder. Allow community plugins in this synthetic vault and enable only the bundled **Journal Media** plugin. Do not install it into the personal journal for testing. Open `2026/10/2026-10-17.md`.
+`test:vault` only creates fixtures for inspection or API-based test development. For routine smoke verification, run `npm run test:obsidian`; it creates, opens, and verifies its own isolated vault, including the guarded trust step. Do not open or configure a vault through native UI automation.
 
-## Computer-use protocol
+## Coverage boundaries
 
-Use this protocol for live Obsidian checks. Start with a fresh generated vault. Record the vault path and Obsidian version before any action. Verify the active window is the synthetic vault before each edit; mark a blocked action **NOT RUN** rather than redirecting it to another vault.
+The host runner verifies received payloads and metadata, record/caption synchronization, actual Bases widgets and links, insertion after note switching, duplicate reuse, Describe later, and reload recovery through app APIs and DOM handlers. Unit/filesystem tests cover additional data and storage-policy cases. Extend those automated checks when new behavior needs coverage.
 
-1. Import `fixtures/sample-exif.jpg` using **Journal Media: Import JPEG or PNG** into `2026/10/2026-10-17.md`. Save `Synthetic JPEG.`. Confirm its preview, local embed, UUID image, XMP, and record. The record must report `captured_at: "2026-10-17T12:34:56.0074-04:00"` and a SHA-256 matching the fixture.
-2. Copy that generated image from an image viewer and paste into the note using the native clipboard. Save a caption. Confirm the received image displays and its record matches its saved payload hash. If the clipboard supplies unchanged bytes, confirm UUID reuse; if it transforms the image, record that difference rather than claiming byte preservation from the source.
-3. Import the original `sample-exif.jpg` into `2027/01/2027-01-04.md`. Confirm the same UUID, one payload with the original fixture hash, and both note links in the record. Use the identical source file for this duplicate check.
-4. Open **Journal Media: Open image library**. Edit the JPEG description through the Bases table to `Edited synthetic JPEG.`. Confirm the record properties, portable JSON snapshot, XMP, and generated alt text in both notes agree; open the image and journal links.
-5. Drag `fixtures/sample.png` from the file manager into the first note. While its caption is open, switch to the second note if workspace navigation permits, then save `Synthetic PNG.`. If the modal blocks navigation, record the note-switch case as NOT RUN. Confirm PNG bytes match the fixture, insertion stayed in the first note, and the second note did not gain that PNG embed.
-6. Create and open another fresh generated vault for this case and steps 7–8. Import `sample.png` and choose **Describe later**. Confirm the payload and record remain, `caption_status` is `pending`, and **Edit image description** can complete it. An already confirmed duplicate keeps its existing caption instead of becoming pending.
-7. Paste a fixture, leave its caption open, and reload Obsidian before saving. After reload, run **Journal Media: Recover interrupted image captures** and save a caption. Confirm the recovered embed, intact matching payload, and empty `.journal-media/staging/`. Recovering a duplicate must reuse its UUID.
-8. Run **Journal Media: Check image records**. Confirm zero missing files and zero interrupted captures; explain any descriptions intentionally left pending.
-
-For a file-preserving import or drop, compare both SHA-256 values directly (replace the paths and UUID):
-
-```sh
-shasum -a 256 "/absolute/test-vault/fixtures/sample-exif.jpg" "/absolute/test-vault/2026/images/<uuid>.jpg"
-```
-
-Both values must match each other, the record's `sha256`, and the fixture hash in `.journal-media-test-vault.json`. Repeat for the PNG. Native clipboard sources may transform bytes or strip EXIF before the plugin receives them; report that boundary explicitly.
+Generated clipboard/drop events do not establish native clipboard conversion or Finder gesture behavior. Leave unsupported boundaries `NOT RUN`. Historical native test results do not authorize a new native/computer-use test.
 
 ## Evidence checklist
 
-Record each item as **PASS**, **FAIL**, or **NOT RUN**, with the failure or omission reason:
+Use the retained `.image-ledger-smoke/` JSON receipts and file assertions. Record:
 
-- Date, Obsidian version, generated vault path, and build commit.
-- Unit/build command result and test count.
-- Each protocol step above, with its result and supporting screenshot or file check.
-- Image/record/sidecar paths, source and saved hashes, duplicate payload count, and recovery staging count.
-- Native clipboard, native drop, Bases UI editing, Describe later, and reload method exercised.
+- Date, Obsidian version, generated vault path, build identity, duration, and exit status.
+- Unit/build results when run, plus each host check's `PASS`, `FAIL`, or `NOT RUN` outcome.
+- Payload/record/sidecar hashes, metadata, caption/embed consistency, duplicate counts, and final staging/audit counts.
+- The actual API/DOM methods exercised and any unverified OS boundaries.
 
-Keep screenshots and a short results note with the test vault. A blocked action, timeout, or missing evidence is not a pass. Do not combine historical evidence with current results.
+A timeout, blocked action, missing receipt, or historical result is not a current pass. Keep failed vaults and receipts for diagnosis. Do not collect screenshots or start native UI automation as a verification fallback.
 
-## Current validation
+## Current format
+
+Image Ledger is under development and supports only its current record, settings, and staging formats. There are no legacy-name aliases, migration backups, settings imports, or inferred recovery destinations. Staged captures must retain their explicit storage folder. Unit tests cover malformed current-format inputs and refuse them without deleting staged payloads.
+
+## Previous image-model validation — 2026-10-24
+
+Verified on 2026-10-24 for OBS-5 in Obsidian 1.14.5:
+
+- PASS: `npm test` builds successfully and passes 65 tests. Coverage includes the image-centered schema, legacy settings/record/receipt migration, original-record backups, caption synchronization across migration, all storage policies, and safe installer upgrades.
+- PASS: `npm run test:obsidian` completed all eight host checks in a fresh `ImageLedger-*` synthetic vault in **4.7 seconds**, including the build. Flat storage, schema 2, arbitrary note references, Bases edits, duplicate reuse, note switching, and real reload recovery passed. Final audit: two records, zero pending descriptions, zero missing images, zero staged captures.
+- Native OS clipboard conversion and Finder gestures were not rerun. The personal journal was not used for testing or installation.
+
+See [the OBS-5 report](docs/smoke-tests/2026-10-24-obs5.md) for the model, compatibility boundary, and receipts.
+
+## Previous host-runner validation — 2026-10-23
 
 Verified on 2026-10-23 in Obsidian 1.14.5:
 
 - PASS: `npm test` builds successfully and passes 51 tests, including 16 smoke-runner isolation, trust, receipt and timeout checks.
 - PASS: two consecutive `npm run test:obsidian` runs in fresh generated vaults, including their builds, took **13.620 seconds** and **4.529 seconds**. Both completed all eight host checks and independently verified two records, confirmed captions, matching payloads/metadata/XMP/embeds, and empty staging.
 - The first-open trust gate is handled only after verifying the new synthetic vault and its sole bundled plugin. Startup and reload require explicit readiness acknowledgments. Every run has a 90-second deadline and produces JSON receipts; no native computer-control fallback runs.
-- Native OS clipboard conversion and Finder gestures remain manual checks. The host run does not claim those boundaries passed.
+- Native OS clipboard conversion and Finder gestures were not verified by this host run. Current policy leaves them unverified without computer-use testing.
 
 See [the host-runner report](docs/smoke-tests/2026-10-23-host.md) and its JSON evidence.
 
@@ -90,7 +94,7 @@ Verified on 2026-10-22 in two fresh synthetic vaults, Obsidian 1.14.4:
 - PASS: both final audit notices and independent file checks report zero pending descriptions, zero missing files and zero interrupted captures.
 - NOT RUN: the complete native mouse/keyboard protocol. Native Finder drag/drop, repeated duplicate file-picker selection, and the remaining native control paths are unverified. Computer control returned stale screens, `noWindowsAvailable` and timeouts; these are not plugin failures or passes.
 
-See [the dated report](docs/smoke-tests/2026-10-22.md) for methods, hashes, receipts and remaining native gaps. This is mixed native/host validation, not a full native protocol pass. The one-off host runners are not included as a supported automated test framework. The computer-use protocol above remains the supported native verification path.
+See [the dated report](docs/smoke-tests/2026-10-22.md) for methods, hashes, receipts and remaining native gaps. This is mixed native/host validation, not a full native protocol pass. The one-off host runners are not included as a supported automated test framework. These dated results are historical evidence; the current API-only testing policy above applies.
 
 ## Historical live baseline
 

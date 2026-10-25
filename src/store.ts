@@ -2,6 +2,7 @@ import path from 'node:path';
 import { detectImageFormat, extractMetadata, newImageId, sha256 } from './media';
 import { BASE_CONTENT, normalizeDescription, parseRecord, serializeRecord, serializeSidecar } from './records';
 import type { ImageRecord, MediaInput } from './types';
+import type { StorageLayout } from './settings';
 
 export interface VaultIO {
   exists(path: string): Promise<boolean>;
@@ -20,7 +21,7 @@ export interface PendingCapture {
   dataPath: string;
   transactionPath: string;
   sourcePath: string;
-  journalDate: string;
+  storageFolder: string;
   importedAt: string;
   name: string | null;
   lastModified: number | null;
@@ -32,36 +33,37 @@ export interface PreparedCapture {
   record: ImageRecord;
   duplicate: boolean;
 }
-const STATE_DIR = '.journal-media/staging';
+const STATE_DIR = '.image-ledger/staging';
 
-export function journalLocation(sourcePath: string, now = new Date()): { year: string; date: string } {
+export function storageFolder(sourcePath: string, importedAt: Date, layout: StorageLayout): string {
+  if (layout === 'flat') return '';
+  if (layout === 'import-year') return String(importedAt.getFullYear());
   const filename = path.posix.basename(sourcePath, '.md');
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(filename);
   if (match && Number(match[2]) >= 1 && Number(match[2]) <= 12 && Number(match[3]) >= 1 && Number(match[3]) <= 31) {
-    return {year: match[1], date: filename};
+    return match[1];
   }
-  const year = /^(\d{4})\//.exec(sourcePath)?.[1] ?? String(now.getFullYear());
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  return {year, date: today};
+  return /^(\d{4})\//.exec(sourcePath)?.[1] ?? String(importedAt.getFullYear());
 }
 
 export class MediaStore {
   private records = new Map<string, ImageRecord>();
   private byHash = new Map<string, ImageRecord>();
   private serial: Promise<unknown> = Promise.resolve();
-  constructor(private io: VaultIO) {}
+  constructor(private io: VaultIO, private settings: {storageLayout: StorageLayout} = {storageLayout: 'flat'}) {}
 
   async initialize(): Promise<void> {
     await this.io.mkdir(STATE_DIR);
     await this.refresh();
-    if (!await this.io.exists('journal-images.base')) await this.io.write('journal-images.base', BASE_CONTENT);
+    if (!await this.io.exists('image-library.base')) await this.io.write('image-library.base', BASE_CONTENT);
   }
 
   async refresh(): Promise<void> {
     const records = new Map<string, ImageRecord>();
     const hashes = new Map<string, ImageRecord>();
     for (const file of await this.io.recordPaths()) {
-      const record = parseRecord(await this.io.read(file));
+      const content = await this.io.read(file);
+      const record = parseRecord(content);
       if (record && record.recordPath === file) {
         records.set(record.id, record);
         hashes.set(record.sha256, record);
@@ -81,10 +83,11 @@ export class MediaStore {
   async stage(input: MediaInput, sourcePath: string): Promise<PendingCapture> {
     const format = detectImageFormat(input.bytes);
     const id = newImageId();
-    const location = journalLocation(sourcePath);
+    const now = new Date();
+    const folder = storageFolder(sourcePath, now, this.settings.storageLayout);
     const pending: PendingCapture = {
       version: 1, id, dataPath: `${STATE_DIR}/${id}.${format}`, transactionPath: `${STATE_DIR}/${id}.json`,
-      sourcePath, journalDate: location.date, importedAt: new Date().toISOString(),
+      sourcePath, storageFolder: folder, importedAt: now.toISOString(),
       name: input.name ?? null, lastModified: input.lastModified && input.lastModified > 0 ? input.lastModified : null,
       method: input.method, format,
     };
@@ -110,17 +113,18 @@ export class MediaStore {
           await this.io.mkdir(path.posix.dirname(known.imagePath));
           await this.io.writeBinary(known.imagePath, bytes, pending.lastModified ?? undefined);
         }
-        return {pending, record: {...known, journalEntries: [...new Set([...known.journalEntries, pending.sourcePath])]}, duplicate: true};
+        return {pending, record: {...known, sourceNotes: [...new Set([...known.sourceNotes, pending.sourcePath])]}, duplicate: true};
       }
-      const year = journalLocation(pending.sourcePath).year;
-      const imagePath = `${year}/images/${pending.id}.${pending.format}`;
-      const recordPath = `${year}/image-records/${pending.id}.md`;
+      const folder = pending.storageFolder;
+      const prefix = folder ? `${folder}/` : '';
+      const imagePath = `${prefix}images/${pending.id}.${pending.format}`;
+      const recordPath = `${prefix}image-records/${pending.id}.md`;
       const record: ImageRecord = {
-        schemaVersion: 1, id: pending.id, description: 'Description pending', captionStatus: 'pending',
-        imagePath, recordPath, sidecarPath: `${year}/images/${pending.id}.xmp`,
+        schemaVersion: 2, id: pending.id, description: 'Description pending', captionStatus: 'pending',
+        imagePath, recordPath, sidecarPath: `${prefix}images/${pending.id}.xmp`,
         sourceName: pending.name, sourceLastModified: pending.lastModified,
-        ingestMethod: pending.method, importedAt: pending.importedAt, journalDate: pending.journalDate,
-        journalEntries: [pending.sourcePath], sha256: hash, bytes: bytes.byteLength, format: pending.format,
+        ingestMethod: pending.method, importedAt: pending.importedAt,
+        sourceNotes: [pending.sourcePath], sha256: hash, bytes: bytes.byteLength, format: pending.format,
         metadata: await extractMetadata(bytes),
       };
       await this.io.mkdir(path.posix.dirname(imagePath));
@@ -144,8 +148,8 @@ export class MediaStore {
 
   async persist(record: ImageRecord): Promise<void> {
     await this.io.mkdir(path.posix.dirname(record.recordPath));
-    await this.io.write(record.recordPath, serializeRecord(record));
     await this.io.write(record.sidecarPath, serializeSidecar(record));
+    await this.io.write(record.recordPath, serializeRecord(record));
     this.records.set(record.id, record);
     this.byHash.set(record.sha256, record);
   }
@@ -162,7 +166,11 @@ export class MediaStore {
       if (!file.endsWith('.json')) continue;
       try {
         const item = JSON.parse(await this.io.read(file)) as PendingCapture;
-        if (item.version === 1 && /^[0-9a-f-]{36}$/.test(item.id) && item.transactionPath === `${STATE_DIR}/${item.id}.json` && item.dataPath === `${STATE_DIR}/${item.id}.${item.format}` && ['jpg', 'png'].includes(item.format) && await this.io.exists(item.dataPath)) captures.push(item);
+        if (item.version === 1 && /^[0-9a-f-]{36}$/.test(item.id) && ['jpg', 'png'].includes(item.format)
+          && item.transactionPath === `${STATE_DIR}/${item.id}.json` && item.dataPath === `${STATE_DIR}/${item.id}.${item.format}`
+          && item.transactionPath === file && typeof item.sourcePath === 'string' && typeof item.importedAt === 'string' && Number.isFinite(Date.parse(item.importedAt))
+          && typeof item.storageFolder === 'string' && /^(?:\d{4})?$/.test(item.storageFolder)
+          && await this.io.exists(item.dataPath)) captures.push(item);
       } catch { /* A partial receipt is retained for manual inspection, never treated as a valid image. */ }
     }
     return captures;

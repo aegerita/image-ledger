@@ -1,10 +1,12 @@
 import { posix } from 'node:path';
 import type { ImageMetadata, ImageRecord } from './types';
 
-const RECORD_START = '<!-- journal-media:record -->';
-const RECORD_END = '<!-- /journal-media:record -->';
+const RECORD_START = '<!-- image-ledger:record -->';
+const RECORD_END = '<!-- /image-ledger:record -->';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
+const RECORD_FIELDS = new Set(['schemaVersion', 'id', 'description', 'captionStatus', 'imagePath', 'recordPath', 'sidecarPath',
+  'sourceName', 'sourceLastModified', 'ingestMethod', 'importedAt', 'sourceNotes', 'sha256', 'bytes', 'format', 'metadata']);
 
 /** Keep captions useful both as one-line Markdown alt text and Bases properties. */
 export function normalizeDescription(text: string): string {
@@ -36,16 +38,15 @@ export function serializeRecord(record: ImageRecord): string {
   const scalar = (key: string, value: string | number | null) => `${key}: ${JSON.stringify(value)}`;
   const lines = [
     '---',
-    scalar('type', 'journal-image'),
+    scalar('type', 'image-ledger-image'),
     scalar('schema_version', record.schemaVersion),
     scalar('image_id', record.id),
     scalar('description', description),
     scalar('caption_status', record.captionStatus),
     scalar('local_file', wikiLink(record.imagePath)),
     scalar('sidecar_file', wikiLink(record.sidecarPath)),
-    'journal_entries:',
-    ...record.journalEntries.map((entry) => `  - ${JSON.stringify(wikiLink(entry.replace(/\.md$/i, '')))}`),
-    scalar('journal_date', record.journalDate),
+    'source_notes:',
+    ...record.sourceNotes.map((entry) => `  - ${JSON.stringify(wikiLink(entry.replace(/\.md$/i, '')))}`),
     scalar('captured_at', record.metadata.capturedAt),
     scalar('capture_time_raw', record.metadata.captureTimeRaw),
     scalar('capture_time_offset', record.metadata.captureTimeOffset),
@@ -79,14 +80,14 @@ export function serializeRecord(record: ImageRecord): string {
     '',
   ];
   // An explicit empty YAML array is distinguishable from a null property.
-  if (record.journalEntries.length === 0) lines[lines.indexOf('journal_entries:')] = 'journal_entries: []';
+  if (record.sourceNotes.length === 0) lines[lines.indexOf('source_notes:')] = 'source_notes: []';
   return lines.join('\n');
 }
 
 /** Read our portable record without importing or depending on Obsidian. */
 export function parseRecordSnapshot(markdown: string): ImageRecord | null {
   try {
-    const match = markdown.match(/<!-- journal-media:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```\r?\n<!-- \/journal-media:record -->/);
+    const match = markdown.match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```\r?\n<!-- \/image-ledger:record -->/);
     if (!match) return null;
     const value: unknown = JSON.parse(match[1]);
     return isImageRecord(value) ? value : null;
@@ -101,7 +102,7 @@ export function parseRecord(markdown: string): ImageRecord | null {
     if (!frontmatter) return null;
     const type = readFrontmatterScalar(frontmatter, 'type');
     const id = readFrontmatterScalar(frontmatter, 'image_id');
-    if (type !== 'journal-image' || id !== parsed.id) return null;
+    if (type !== 'image-ledger-image' || id !== parsed.id) return null;
     const hash = readFrontmatterScalar(frontmatter, 'sha256');
     if (hash !== undefined && hash !== parsed.sha256) return null;
     const localFile = readFrontmatterScalar(frontmatter, 'local_file');
@@ -118,36 +119,37 @@ export function parseRecord(markdown: string): ImageRecord | null {
       if (captionStatus !== 'pending' && captionStatus !== 'confirmed') return null;
       parsed.captionStatus = captionStatus;
     }
-    const entries = readJournalEntries(frontmatter);
-    if (entries !== undefined) parsed.journalEntries = entries;
+    const entries = readSourceNotes(frontmatter);
+    if (entries !== undefined) parsed.sourceNotes = entries;
     return isImageRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function readJournalEntries(frontmatter: string): string[] | undefined {
+function readSourceNotes(frontmatter: string): string[] | undefined {
+  const key = 'source_notes';
   const lines = frontmatter.split(/\r?\n/);
-  const start = lines.findIndex(line => line.startsWith('journal_entries:'));
+  const start = lines.findIndex(line => line.startsWith(`${key}:`));
   if (start < 0) return undefined;
-  const inline = lines[start].slice('journal_entries:'.length).trim();
+  const inline = lines[start].slice(key.length + 1).trim();
   const strings: string[] = [];
   if (inline) {
     const values: unknown = JSON.parse(inline);
-    if (!Array.isArray(values) || !values.every(value => typeof value === 'string')) throw new Error('Invalid journal entries.');
+    if (!Array.isArray(values) || !values.every(value => typeof value === 'string')) throw new Error('Invalid note links.');
     strings.push(...values);
   } else {
     for (let index = start + 1; index < lines.length && /^\s/.test(lines[index]); index++) {
       const item = /^\s+-\s+(.+)$/.exec(lines[index]);
       if (!item) continue;
       const value = readFrontmatterScalar(`item: ${item[1]}`, 'item');
-      if (typeof value !== 'string') throw new Error('Invalid journal entry link.');
+      if (typeof value !== 'string') throw new Error('Invalid note link.');
       strings.push(value);
     }
   }
   return strings.map(value => {
     const link = /^\[\[([^\[\]#|]+)\]\]$/.exec(value);
-    if (!link) throw new Error('Invalid journal entry link.');
+    if (!link) throw new Error('Invalid note link.');
     const location = link[1].endsWith('.md') ? link[1] : `${link[1]}.md`;
     assertVaultPath(location);
     return location;
@@ -160,7 +162,7 @@ export function serializeSidecar(record: ImageRecord): string {
   const description = xml(normalizeDescription(record.description));
   const created = record.metadata.capturedAt === null ? '' : `\n      <xmp:CreateDate>${xml(record.metadata.capturedAt)}</xmp:CreateDate>`;
   return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Journal Media">
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Image Ledger">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about=""
       xmlns:dc="http://purl.org/dc/elements/1.1/"
@@ -177,7 +179,7 @@ export function serializeSidecar(record: ImageRecord): string {
 /** Bases is a view of ordinary Markdown notes, not a separate metadata store. */
 export const BASE_CONTENT = `filters:
   and:
-    - 'note.type == "journal-image"'
+    - 'note.type == "image-ledger-image"'
 properties:
   note.description:
     displayName: Description
@@ -189,18 +191,18 @@ properties:
     displayName: Imported
   note.caption_status:
     displayName: Caption status
-  note.journal_entries:
-    displayName: Journal entries
+  note.source_notes:
+    displayName: Notes
 views:
   - type: table
-    name: Journal images
+    name: Images
     order:
       - note.description
       - note.local_file
       - note.captured_at
       - note.imported_at
       - note.caption_status
-      - note.journal_entries
+      - note.source_notes
     sort:
       - property: note.imported_at
         direction: DESC
@@ -245,8 +247,9 @@ function isMetadata(value: unknown): value is ImageMetadata {
 
 function isImageRecord(value: unknown): value is ImageRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  if (Object.keys(value).some(key => !RECORD_FIELDS.has(key))) return false;
   const item = value as Partial<ImageRecord>;
-  if (item.schemaVersion !== 1 || typeof item.id !== 'string' || !UUID.test(item.id)
+  if (item.schemaVersion !== 2 || typeof item.id !== 'string' || !UUID.test(item.id)
     || typeof item.description !== 'string' || !item.description.trim()
     || (item.captionStatus !== 'confirmed' && item.captionStatus !== 'pending')
     || typeof item.sha256 !== 'string' || !SHA256.test(item.sha256)
@@ -255,17 +258,16 @@ function isImageRecord(value: unknown): value is ImageRecord {
     || !isNullableString(item.sourceName) || !isNullableNumber(item.sourceLastModified)
     || !['clipboard', 'drop', 'file'].includes(item.ingestMethod ?? '')
     || typeof item.importedAt !== 'string' || !Number.isFinite(Date.parse(item.importedAt))
-    || typeof item.journalDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.journalDate)
-    || !Array.isArray(item.journalEntries) || !isMetadata(item.metadata)) return false;
+    || !Array.isArray(item.sourceNotes) || !isMetadata(item.metadata)) return false;
   try {
-    for (const path of [item.imagePath, item.recordPath, item.sidecarPath, ...item.journalEntries]) {
+    for (const path of [item.imagePath, item.recordPath, item.sidecarPath, ...item.sourceNotes]) {
       if (typeof path !== 'string') return false;
       assertVaultPath(path);
     }
     if (posix.basename(item.imagePath!) !== `${item.id}.${item.format}`
       || posix.basename(item.recordPath!) !== `${item.id}.md`
       || posix.basename(item.sidecarPath!) !== `${item.id}.xmp`
-      || !item.journalEntries.every((path) => path.endsWith('.md'))) return false;
+      || !item.sourceNotes.every((path) => path.endsWith('.md'))) return false;
     return true;
   } catch {
     return false;

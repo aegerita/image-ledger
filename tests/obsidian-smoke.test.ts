@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertSelectedVault, cliInvocation, runCommand, verifyTrustTarget, waitForReady, waitForReceipt, waitForSelectedVault } from '../scripts/obsidian-smoke';
+import { assertSelectedVault, cliInvocation, runCommand, validateFinalVault, verifyTrustTarget, waitForReady, waitForReceipt, waitForSelectedVault } from '../scripts/obsidian-smoke';
 import { createTestVault, markerName } from '../scripts/test-vault';
 import { sha256 } from '../src/media';
 
@@ -13,13 +13,13 @@ const host = createRequire(import.meta.url)('../scripts/obsidian-smoke-host.cjs'
 const runId = randomUUID();
 
 async function temporaryDirectory(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), 'journal-media-smoke-test-'));
+  return mkdtemp(path.join(os.tmpdir(), 'image-ledger-smoke-test-'));
 }
 
 async function guardedFixture() {
   const parent = await temporaryDirectory();
   const vault = await createTestVault(path.join(parent, 'generated vault'));
-  const artifacts = Object.fromEntries(await Promise.all(['main.js', 'manifest.json', 'styles.css'].map(async name => [name, sha256(await readFile(path.join(vault, '.obsidian/plugins/journal-media', name)))])));
+  const artifacts = Object.fromEntries(await Promise.all(['main.js', 'manifest.json', 'styles.css'].map(async name => [name, sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', name)))])));
   const config = { vault, runId: randomUUID(), phase: 'main', deadline: Date.now() + 10000, artifacts };
   const app = { vault: { adapter: { getBasePath: () => vault } } };
   return { parent, vault, app, config };
@@ -100,12 +100,26 @@ test('host guard rejects an invalid marker and changed fixture before app action
   } finally { await rm(f.parent, { recursive: true, force: true }); }
 });
 
+for (const storage of ['', '2042']) test(`final validation discovers ${storage || 'flat'} storage and skips hidden state and fixtures`, async () => {
+  const f = await guardedFixture();
+  try {
+    for (const folder of [storage, '.ignored/2042', 'fixtures/2042']) {
+      for (const kind of ['images', 'image-records']) await mkdir(path.join(f.vault, folder, kind), {recursive: true});
+      for (const id of ['one', 'two']) {
+        await writeFile(path.join(f.vault, folder, 'image-records', id + '.md'), 'invalid synthetic record');
+        await writeFile(path.join(f.vault, folder, 'images', id + '.png'), 'synthetic payload');
+      }
+    }
+    await assert.rejects(validateFinalVault(f.vault, f.config.artifacts), new RegExp(`Invalid record: ${storage ? storage + '/' : ''}image-records/`));
+  } finally {await rm(f.parent, {recursive: true, force: true});}
+});
+
 test('host guard rejects plugin artifact drift and expired execution', async () => {
   const f = await guardedFixture();
   try {
     host.verifyVault(f.app, f.config);
     assert.throws(() => host.verifyVault(f.app, { ...f.config, deadline: Date.now() - 1 }), /deadline/i);
-    await writeFile(path.join(f.vault, '.obsidian/plugins/journal-media/main.js'), 'changed build');
+    await writeFile(path.join(f.vault, '.obsidian/plugins/image-ledger/main.js'), 'changed build');
     assert.throws(() => host.verifyVault(f.app, f.config), /Plugin build changed/);
   } finally { await rm(f.parent, { recursive: true, force: true }); }
 });
@@ -190,9 +204,9 @@ test('trust refuses extra enabled or installed plugins before lowering restricte
     const vault = await realpath(fixture.vault);
     await verifyTrustTarget(vault, fixture.config.artifacts);
     const enabled = path.join(vault, '.obsidian/community-plugins.json');
-    await writeFile(enabled, JSON.stringify(['journal-media', 'unreviewed-plugin']));
+    await writeFile(enabled, JSON.stringify(['image-ledger', 'unreviewed-plugin']));
     await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts), /unknown plugin/);
-    await writeFile(enabled, JSON.stringify(['journal-media']));
+    await writeFile(enabled, JSON.stringify(['image-ledger']));
     await mkdir(path.join(vault, '.obsidian/plugins/unreviewed-plugin'));
     await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts), /another plugin/);
   } finally {await rm(fixture.parent, {recursive: true, force: true});}

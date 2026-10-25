@@ -7,12 +7,11 @@ import { MediaStore, type PendingCapture } from './store';
 import { markdownEmbed, normalizeDescription, parseRecord, parseRecordSnapshot } from './records';
 import type { ImageRecord, MediaInput } from './types';
 import { latestBatchRecords, settledCaptures } from './capture-batch';
+import { DEFAULTS, isStorageLayout, settingsFromData, type Settings } from './settings';
 
-interface Settings { interceptPaste: boolean; interceptDrop: boolean; showRecordLink: boolean }
-const DEFAULTS: Settings = {interceptPaste: true, interceptDrop: true, showRecordLink: true};
 interface CaptureContext { file: TFile; editor: Editor; view?: EditorView; anchorId: string }
 
-export default class JournalMediaPlugin extends Plugin {
+export default class ImageLedgerPlugin extends Plugin {
   settings: Settings = {...DEFAULTS};
   store!: MediaStore;
   private editors = new WeakMap<Editor, EditorView>();
@@ -20,8 +19,8 @@ export default class JournalMediaPlugin extends Plugin {
   private recordTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   async onload(): Promise<void> {
-    this.settings = {...DEFAULTS, ...await this.loadData()};
-    this.store = new MediaStore(createVaultIO(this.app.vault));
+    this.settings = settingsFromData(await this.loadData());
+    this.store = new MediaStore(createVaultIO(this.app.vault), this.settings);
     const plugin = this;
     this.registerEditorExtension([insertionAnchors, ViewPlugin.fromClass(class {
       constructor(public view: EditorView) { this.track(); }
@@ -58,7 +57,7 @@ export default class JournalMediaPlugin extends Plugin {
     }});
     this.addCommand({id: 'open-image-library', name: 'Open image library', callback: async () => {
       await this.ensureInitialized();
-      await this.app.workspace.openLinkText('journal-images.base', '', true);
+      await this.app.workspace.openLinkText('image-library.base', '', true);
     }});
     this.addCommand({id: 'edit-image-description', name: 'Edit image description', callback: () => this.selectRecord(async record => {
       const description = await this.askDescription(record);
@@ -83,7 +82,7 @@ export default class JournalMediaPlugin extends Plugin {
       const rewrite = (value: string) => value === previousPath ? file.path : value.startsWith(previousPath + '/') ? file.path + value.slice(previousPath.length) : value;
       this.enqueue(async () => {
         for (const record of this.store.allRecords()) {
-          const next = {...record, imagePath: rewrite(record.imagePath), recordPath: rewrite(record.recordPath), sidecarPath: rewrite(record.sidecarPath), journalEntries: record.journalEntries.map(rewrite)};
+          const next = {...record, imagePath: rewrite(record.imagePath), recordPath: rewrite(record.recordPath), sidecarPath: rewrite(record.sidecarPath), sourceNotes: record.sourceNotes.map(rewrite)};
           if (JSON.stringify(next) !== JSON.stringify(record)) {
             await this.store.persist(next);
           }
@@ -94,7 +93,7 @@ export default class JournalMediaPlugin extends Plugin {
       void this.ensureInitialized().then(async () => {
         for (const record of this.store.allRecords()) await this.reconcileRecord(record.recordPath);
         const pending = await this.store.pendingCaptures();
-        if (pending.length) new Notice(`${pending.length} image capture(s) can be recovered. Run Journal Media: Recover interrupted image captures.`, 12000);
+        if (pending.length) new Notice(`${pending.length} image capture(s) can be recovered. Run Image Ledger: Recover interrupted image captures.`, 12000);
       }).catch(error => this.report(error));
     });
   }
@@ -149,7 +148,7 @@ export default class JournalMediaPlugin extends Plugin {
           const old = prepared.duplicate ? this.store.allRecords().find(record => record.id === prepared.record.id) : undefined;
           const description = await this.askDescription(prepared.record);
           if (pending.sourcePath !== context.file.path) {
-            prepared.record.journalEntries = prepared.record.journalEntries.map(value => value === pending.sourcePath ? context.file.path : value);
+            prepared.record.sourceNotes = prepared.record.sourceNotes.map(value => value === pending.sourcePath ? context.file.path : value);
             await this.store.retarget(pending, context.file.path);
           }
           const record = await this.store.describe(prepared, description);
@@ -220,7 +219,7 @@ export default class JournalMediaPlugin extends Plugin {
         if (record) return await action(record);
       }
       const records = this.store.allRecords();
-      if (!records.length) return void new Notice('No journal images yet. Paste a JPEG or PNG into a note.');
+      if (!records.length) return void new Notice('No images yet. Paste a JPEG or PNG into a note.');
       new RecordPicker(this.app, records, record => void action(record).catch(error => this.report(error))).open();
     } catch (error) { this.report(error); }
   }
@@ -231,7 +230,7 @@ export default class JournalMediaPlugin extends Plugin {
   }
 
   private async updateEmbeds(previous: ImageRecord, next: ImageRecord): Promise<void> {
-    for (const sourcePath of next.journalEntries) {
+    for (const sourcePath of next.sourceNotes) {
       const file = this.app.vault.getAbstractFileByPath(sourcePath);
       if (!(file instanceof TFile)) continue;
       const before = markdownEmbed(previous, sourcePath);
@@ -299,8 +298,8 @@ export default class JournalMediaPlugin extends Plugin {
   }
 
   private report(error: unknown): void {
-    console.error('Journal Media:', error);
-    new Notice(`Journal Media: ${error instanceof Error ? error.message : String(error)}`, 12000);
+    console.error('Image Ledger:', error);
+    new Notice(`Image Ledger: ${error instanceof Error ? error.message : String(error)}`, 12000);
   }
 }
 
@@ -309,13 +308,13 @@ class DescriptionModal extends Modal {
   constructor(app: App, private record: ImageRecord, private resolve: (value: string | null) => void) { super(app); }
   onOpen(): void {
     this.titleEl.setText('Describe this image');
-    this.contentEl.addClass('journal-media-description');
+    this.contentEl.addClass('image-ledger-description');
     const image = this.app.vault.getAbstractFileByPath(this.record.imagePath);
     if (image instanceof TFile) this.contentEl.createEl('img', {attr: {src: this.app.vault.getResourcePath(image), alt: 'Image being added'}});
     this.contentEl.createEl('p', {text: 'A short sentence becomes the image description and its searchable record.'});
     const input = this.contentEl.createEl('input', {type: 'text', attr: {'aria-label': 'Image description', placeholder: 'What is happening in this image?', maxlength: '500'}});
     input.value = this.record.captionStatus === 'confirmed' ? this.record.description : '';
-    const error = this.contentEl.createEl('div', {cls: 'journal-media-validation', attr: {'aria-live': 'polite'}});
+    const error = this.contentEl.createEl('div', {cls: 'image-ledger-validation', attr: {'aria-live': 'polite'}});
     const submit = () => {
       try { const value = normalizeDescription(input.value); this.submitted = true; this.resolve(value); this.close(); }
       catch { error.setText('Enter a short description, or choose Describe later.'); input.focus(); }
@@ -334,7 +333,7 @@ class RecordPicker extends Modal {
   onOpen(): void {
     this.titleEl.setText('Choose an image');
     const input = this.contentEl.createEl('input', {type: 'search', attr: {placeholder: 'Search descriptions or UUIDs', 'aria-label': 'Search images'}});
-    const results = this.contentEl.createDiv({cls: 'journal-media-picker'});
+    const results = this.contentEl.createDiv({cls: 'image-ledger-picker'});
     const render = () => {
       results.empty();
       const search = input.value.toLocaleLowerCase();
@@ -348,14 +347,15 @@ class RecordPicker extends Modal {
 }
 
 class MediaSettings extends PluginSettingTab {
-  constructor(app: App, private plugin: JournalMediaPlugin) { super(app, plugin); }
+  constructor(app: App, private plugin: ImageLedgerPlugin) { super(app, plugin); }
   display(): void {
     const {containerEl} = this; containerEl.empty();
-    containerEl.createEl('h2', {text: 'Journal Media'});
-    containerEl.createEl('p', {text: 'JPEG/PNG files stay unchanged in the journal year’s images folder. Records and descriptions live in image-records. No upload or backup runs in this version.'});
+    containerEl.createEl('h2', {text: 'Image Ledger'});
+    containerEl.createEl('p', {text: 'JPEG/PNG files stay unchanged. Images and records use the selected storage layout. No upload or backup runs in this version.'});
     new Setting(containerEl).setName('Handle image paste').addToggle(toggle => toggle.setValue(this.plugin.settings.interceptPaste).onChange(async value => {this.plugin.settings.interceptPaste = value; await this.plugin.saveSettings();}));
     new Setting(containerEl).setName('Handle image drop').addToggle(toggle => toggle.setValue(this.plugin.settings.interceptDrop).onChange(async value => {this.plugin.settings.interceptDrop = value; await this.plugin.saveSettings();}));
-    new Setting(containerEl).setName('Link image details in the journal').setDesc('Add a small link to the image record underneath each new image.').addToggle(toggle => toggle.setValue(this.plugin.settings.showRecordLink).onChange(async value => {this.plugin.settings.showRecordLink = value; await this.plugin.saveSettings();}));
-    containerEl.createEl('p', {text: 'Use Journal Media: Open image library to browse images in Bases. Disable another image-paste uploader before using this plugin.'});
+    new Setting(containerEl).setName('Link image details in notes').setDesc('Add a small link to the image record underneath each new image.').addToggle(toggle => toggle.setValue(this.plugin.settings.showRecordLink).onChange(async value => {this.plugin.settings.showRecordLink = value; await this.plugin.saveSettings();}));
+    new Setting(containerEl).setName('Image storage').setDesc('Choose one folder, the import year, or a year from the note name or folder. Existing images stay in place.').addDropdown(dropdown => dropdown.addOptions({'flat': 'Single folder', 'import-year': 'Import year', 'note-year': 'Note year'}).setValue(this.plugin.settings.storageLayout).onChange(async value => {if (!isStorageLayout(value)) return; this.plugin.settings.storageLayout = value; await this.plugin.saveSettings();}));
+    containerEl.createEl('p', {text: 'Use Image Ledger: Open image library to browse images in Bases. Disable another image-paste uploader before using this plugin.'});
   }
 }

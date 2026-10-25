@@ -1,34 +1,45 @@
-# Journal Media for Obsidian
+# Image Ledger for Obsidian
 
-Paste JPEG/PNG images into your journal, give each a one-line description, and keep the original bytes locally with stable UUID filenames. Browse the linked descriptions and dates in Obsidian Bases.
+Capture JPEG/PNG images in any note, give each a one-line description, and preserve the received bytes and metadata locally with stable UUID filenames. Browse linked descriptions and dates in Obsidian Bases. No journal layout or dated note names are required.
 
 ## Daily use
 
-1. Paste an image, drag it into a note, or run **Journal Media: Import JPEG or PNG**.
+1. Paste an image, drag it into a note, or run **Image Ledger: Import JPEG or PNG**.
 2. Enter one short description. Press Enter or **Save description**.
-3. The note gets a local Markdown image and an **Image details** link. The image record also links back to the journal entry.
-4. Run **Journal Media: Open image library** to browse or edit descriptions in Bases.
+3. The note gets a local Markdown image and an **Image details** link. The image record also links back to the source note.
+4. Run **Image Ledger: Open image library** to browse or edit descriptions in Bases.
 
 **Describe later** keeps the image and marks its description pending. It never discards a pasted image. Use **Edit image description** or edit the `description` property in Bases to finish it. The plugin updates matching generated alt text and the XMP sidecar; deliberately customized alt labels are left alone.
 
 ## Files
 
 ```text
-2026/
-  images/<uuid>.jpg                 # or .png, received bytes unchanged
-  images/<uuid>.xmp                 # portable UUID and description
-  image-records/<uuid>.md           # searchable metadata and journal links
-journal-images.base                # view over all years' image records
-.journal-media/staging/             # temporary crash-recovery files
+images/<uuid>.jpg                   # or .png, received bytes unchanged
+images/<uuid>.xmp                   # portable UUID and description
+image-records/<uuid>.md             # searchable metadata and note references
+image-library.base                 # view over managed image records
+.image-ledger/staging/              # temporary crash-recovery files
 ```
 
-The first journal note determines the year. A daily note named `2025-12-24.md` uses `2025/images/`, even when you add the photo later. Pasting identical bytes again reuses the existing UUID and local image. The SHA-256 hash is recorded for later backup/import integration. Similar-looking but differently encoded images remain separate in this release.
+New installs use the flat layout above. **Image storage** offers three policies:
 
-File bytes are not re-encoded or edited, preserving all metadata that reached the clipboard. EXIF capture time and source UTC offset are recorded when present; a missing timezone remains unknown. Import time and journal date are separate fields. A clipboard image may already lack the phone original's metadata; the plugin cannot recover missing data from its pixels. For full source metadata use the file-import command with the original JPEG/PNG.
+- **Single folder**: `images/` and `image-records/`, independent of note names and dates.
+- **Import year**: group both folders under the local year when the image was imported.
+- **Note year**: use a `YYYY-MM-DD` note name or leading year folder, falling back to the import year.
+
+Storage policy chooses a destination only. It does not assign a date to the image. Each capture keeps its chosen destination through setting changes, note moves, and recovery; existing images stay at their paths.
+
+Pasting identical bytes again reuses the existing UUID and local image, including across storage modes. The SHA-256 hash is recorded for later backup/import integration. Similar-looking but differently encoded images remain separate in this release.
+
+File bytes are not re-encoded or edited, preserving all metadata that reached the clipboard. Images have an import timestamp and source capture metadata, independent of the notes that reference them. EXIF capture time and source UTC offset are recorded when present; a missing timezone remains unknown. A clipboard image may already lack the phone original's metadata; the plugin cannot recover missing data from its pixels. For full source metadata use the file-import command with the original JPEG/PNG.
 
 This release accepts JPEG and PNG. For HEIC, choose its JPEG/PNG companion. It does not import Live Photo videos, convert HEIC, or delete source files.
 
-Records carry flat properties for Bases plus a portable JSON snapshot for recovery. Keep the snapshot block intact; edit description/caption status through properties, Bases or the plugin command. If you move a journal note, Obsidian's normal link updates and the plugin reconcile the backlinks. Keep UUID filenames; use the plugin rather than manually renaming individual images.
+Each image owns one record, regardless of how many notes use it. Schema 2 records use `type: image-ledger-image`, `source_notes` for note references, and `imported_at` / `captured_at` for dates. There is no single note date on an image. Removing a note does not remove its image.
+
+Records carry flat properties for Bases plus a portable JSON snapshot for recovery. Keep the snapshot block intact; edit description/caption status through properties, Bases or the plugin command. If you move a note, Obsidian's normal link updates and the plugin reconcile the references. Keep UUID filenames; use the plugin rather than manually renaming individual images.
+
+This project is under development. Only the current Image Ledger format is supported; earlier development formats are not migrated.
 
 ## Install from source
 
@@ -41,7 +52,7 @@ npm run build
 npm run install:vault -- --vault /absolute/path/to/your/vault --enable
 ```
 
-The installer copies only `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/journal-media/`. It adds `images/` and `.journal-media/` to the vault's Git ignore rules. `--enable` enables Journal Media in the saved plugin configuration and disables the competing Imgur paste handler; its prior plugin list is saved under `.journal-media/`. Reload Obsidian or toggle the plugin on in Community plugins to apply the configuration to an already open window.
+The installer copies `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/image-ledger/`. It adds `images/` and `.image-ledger/` to the vault's Git ignore rules. `--enable` enables Image Ledger in the saved plugin configuration and disables the competing Imgur paste handler; its prior plugin list is saved under `.image-ledger/`. Existing Image Ledger settings are preserved. Reload Obsidian or toggle the plugin on in Community plugins to apply the configuration to an already open window.
 
 For updates, rebuild and run the installer again, then reload the plugin. `npm run dev` rebuilds source changes; it does not copy them automatically into a vault.
 
@@ -53,17 +64,24 @@ For updates, rebuild and run the installer again, then reload the plugin. `npm r
 - **Recover interrupted image captures** — finalize retained captures after an interruption.
 - **Check image records** — show pending captions, missing files and interrupted captures.
 
-Paste positions follow edits in the original editor while a caption is being entered. If that editor closes, the plugin appends to the original note. It never redirects the image into whichever note happens to be active. Image records remain recoverable if the original note is deleted. Removing a journal embed does not delete the underlying image automatically.
+Paste positions follow edits in the original editor while a caption is being entered. If that editor closes, the plugin appends to the original note. It never redirects the image into whichever note happens to be active. Image records remain recoverable if the original note is deleted. Removing an embed does not delete the underlying image automatically.
 
 ## Storage boundaries
 
 All processing stays on your Mac; this version has no network requests, image upload, backup jobs, AI caption service or credentials. Your existing Imgur images are untouched.
 
-Git exclusions do not configure Obsidian Sync, iCloud, Dropbox or other sync services. Configure year image folder exclusions separately before using real photos if you want them kept out of those services. This phase deliberately does not provide an independent image backup; those copies come in the next phase.
+Git exclusions do not configure Obsidian Sync, iCloud, Dropbox or other sync services. Configure image folder exclusions separately before using real photos if you want them kept out of those services. This phase deliberately does not provide an independent image backup; those copies come in the next phase.
 
 ## Verification
 
-`npm test` builds the plugin and runs unit/filesystem checks, including safe test-vault setup. Use `npm run test:vault` to create a fresh synthetic vault, open it in Obsidian, and follow the computer-use protocol in [TESTING.md](TESTING.md). Never use the personal journal for testing. TESTING.md records checks, results, and live verification limits.
+Run unit/filesystem checks and the default live smoke test:
+
+```sh
+npm test
+npm run test:obsidian
+```
+
+The smoke test uses the loaded Obsidian app through CLI/API calls and real DOM handlers in a fresh generated vault. It has a 90-second deadline and keeps JSON receipts. Computer-use tools and native GUI automation are prohibited, including as a fallback when the API fails. Report failures or unverified OS boundaries instead. Never use the personal journal for testing. See [AGENTS.md](AGENTS.md) and [TESTING.md](TESTING.md) for the current instructions.
 
 ## License
 

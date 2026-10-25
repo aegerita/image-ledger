@@ -6,7 +6,7 @@ import type { ImageRecord } from '../src/types';
 const id = '91d1699d-f733-45a9-905c-f630cc2e5426';
 function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     description: 'Canoe beside the dock at sunset.',
     captionStatus: 'confirmed',
@@ -17,8 +17,7 @@ function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
     sourceLastModified: 1792254442000,
     ingestMethod: 'clipboard',
     importedAt: '2026-10-17T14:00:00.000Z',
-    journalDate: '2026-10-17',
-    journalEntries: ['2026/October/17.md'],
+    sourceNotes: ['2026/October/17.md'],
     sha256: 'a'.repeat(64),
     bytes: 1024,
     format: 'jpg',
@@ -42,8 +41,17 @@ test('portable record round trips every field, preserving raw metadata', () => {
   const record = fixture();
   assert.deepEqual(parseRecord(serializeRecord(record)), record);
   assert.match(serializeRecord(record), /local_file: "\[\[2026\/images\//);
-  assert.match(serializeRecord(record), /journal_entries:\n  - "\[\[2026\/October\/17\]\]"/);
+  assert.match(serializeRecord(record), /source_notes:\n  - "\[\[2026\/October\/17\]\]"/);
   assert.match(serializeRecord(record), /capture_time_status: "source_offset"/);
+});
+
+test('snapshot parser accepts only current records and matching markers', () => {
+  const note = serializeRecord(fixture());
+  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion": 2', '"schemaVersion": 99')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion": 2,', '"schemaVersion": 2, "unknownField": true,')), null);
+  assert.equal(parseRecordSnapshot(note.replace('<!-- image-ledger:record -->', '<!-- other:record -->')), null);
+  assert.equal(parseRecordSnapshot(note.replace('<!-- /image-ledger:record -->', '<!-- /other:record -->')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"sourceNotes": [', '"unknownNotes": [')), null);
 });
 
 test('captions normalize whitespace and reject empty values', () => {
@@ -69,7 +77,7 @@ test('record supports paths across years and spaces', () => {
     imagePath: `2026 year/images/${id}.jpg`,
     recordPath: `2026 year/image records/${id}.md`,
     sidecarPath: `2026 year/images/${id}.xmp`,
-    journalEntries: ['2025/December trip/31.md', '2026 year/October/17.md'],
+    sourceNotes: ['2025/December trip/31.md', '2026 year/October/17.md'],
   });
   assert.deepEqual(parseRecord(serializeRecord(record)), record);
 });
@@ -98,9 +106,10 @@ test('parser rejects malformed or mismatched identity and unsafe paths', () => {
   assert.equal(parseRecord('ordinary Markdown'), null);
   assert.equal(parseRecord(note.replace('"sha256": "' + 'a'.repeat(64) + '"', '"sha256": "bad"')), null);
   assert.equal(parseRecord(note.replace(`image_id: "${id}"`, 'image_id: "not-a-uuid"')), null);
-  assert.equal(parseRecord(note.replace('type: "journal-image"', 'type: "other"')), null);
+  assert.equal(parseRecord(note.replace('type: "image-ledger-image"', 'type: "other"')), null);
   assert.equal(parseRecord(note.replace('"imagePath": "2026/images/', '"imagePath": "../images/')), null);
   assert.equal(parseRecord(note.replace('"recordPath": "2026/image-records/', '"recordPath": "/outside/')), null);
+  assert.equal(parseRecord(note.replace('  - "[[2026/October/17]]"', '  - "[[../outside]]"')), null);
   assert.throws(() => serializeRecord(fixture({ sidecarPath: '../bad.xmp' })), /invalid image record/);
   assert.throws(() => markdownEmbed(fixture(), '../outside.md'), /traversal/);
 });
@@ -117,15 +126,15 @@ test('XMP contains escaped description, stable UUID, and original capture date o
   assert.doesNotMatch(serializeSidecar(missing), /2026-10-17T14:00/);
 });
 
-test('empty journal entry lists remain valid YAML arrays', () => {
-  const record = fixture({ journalEntries: [] });
-  assert.match(serializeRecord(record), /journal_entries: \[\]/);
+test('empty source note lists remain valid YAML arrays', () => {
+  const record = fixture({ sourceNotes: [] });
+  assert.match(serializeRecord(record), /source_notes: \[\]/);
   assert.deepEqual(parseRecord(serializeRecord(record)), record);
 });
 
 test('Bases selects image records and displays useful editable fields', () => {
-  assert.match(BASE_CONTENT, /type == "journal-image"/);
-  for (const key of ['description', 'local_file', 'captured_at', 'imported_at', 'caption_status', 'journal_entries']) {
+  assert.match(BASE_CONTENT, /type == "image-ledger-image"/);
+  for (const key of ['description', 'local_file', 'captured_at', 'imported_at', 'caption_status', 'source_notes']) {
     assert.match(BASE_CONTENT, new RegExp(`      - note\\.${key}`));
   }
 });
@@ -138,8 +147,8 @@ test('keeps last serialized caption for synchronization even after frontmatter e
   assert.equal(parseRecordSnapshot(note)?.description, before.description);
 });
 
-test('normal Obsidian journal link updates override the portable snapshot', () => {
+test('normal Obsidian source note link updates override the portable snapshot', () => {
   const note = serializeRecord(fixture()).replace('  - "[[2026/October/17]]"', '  - "[[2026/October/renamed]]"');
-  assert.deepEqual(parseRecord(note)?.journalEntries, ['2026/October/renamed.md']);
-  assert.deepEqual(parseRecordSnapshot(note)?.journalEntries, ['2026/October/17.md']);
+  assert.deepEqual(parseRecord(note)?.sourceNotes, ['2026/October/renamed.md']);
+  assert.deepEqual(parseRecordSnapshot(note)?.sourceNotes, ['2026/October/17.md']);
 });

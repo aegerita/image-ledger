@@ -1,7 +1,7 @@
 {
-  "name": "obsidian-journal-media",
+  "name": "obsidian-image-ledger",
   "version": "0.1.0",
-  "description": "Preserve pasted journal images locally with UUID filenames, captions and linked Bases records.",
+  "description": "Capture images, preserve received bytes and metadata, and manage linked descriptions in any vault.",
   "private": true,
   "type": "module",
   "scripts": {

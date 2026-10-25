@@ -11,7 +11,7 @@ const config = {
   outfile: 'main.js',
   sourcemap: process.argv.includes('--watch') ? 'inline' : false,
   logLevel: 'info',
-  banner: {js: `/* Journal Media: built from source. See README.md. */\n/*! Bundled exifr license:\n${exifrLicense}\n*/`},
+  banner: {js: `/* Image Ledger: built from source. See README.md. */\n/*! Bundled exifr license:\n${exifrLicense}\n*/`},
 };
 if (process.argv.includes('--watch')) {
   const context = await esbuild.context(config);

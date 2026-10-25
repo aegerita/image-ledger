@@ -14,7 +14,7 @@ export interface ImageMetadata {
   warning?: string;
 }
 export interface ImageRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   description: string;
   captionStatus: 'confirmed' | 'pending';
@@ -25,8 +25,7 @@ export interface ImageRecord {
   sourceLastModified: number | null;
   ingestMethod: 'clipboard' | 'drop' | 'file';
   importedAt: string;
-  journalDate: string;
-  journalEntries: string[];
+  sourceNotes: string[];
   sha256: string;
   bytes: number;
   format: ImageFormat;

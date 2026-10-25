@@ -6,10 +6,10 @@ import type { ImageRecord } from '../src/types';
 
 function record(id: string, description: string): ImageRecord {
   return {
-    schemaVersion: 1, id, description, captionStatus: 'confirmed',
-    imagePath: `2026/images/${id}.jpg`, recordPath: `2026/image-records/${id}.md`, sidecarPath: `2026/images/${id}.xmp`,
+    schemaVersion: 2, id, description, captionStatus: 'confirmed',
+    imagePath: `images/${id}.jpg`, recordPath: `image-records/${id}.md`, sidecarPath: `images/${id}.xmp`,
     sourceName: null, sourceLastModified: null, ingestMethod: 'clipboard',
-    importedAt: '2026-10-17T16:00:00Z', journalDate: '2026-10-17', journalEntries: ['2026/10/2026-10-17.md'],
+    importedAt: '2026-10-17T16:00:00Z', sourceNotes: ['Projects/Research.md'],
     sha256: 'a'.repeat(64), bytes: 100, format: 'jpg',
     metadata: {
       capturedAt: null, captureTimeRaw: null, captureTimeOffset: null, captureTimeStatus: 'missing_from_received_file',

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { VaultIO } from './store';
 
 export function createVaultIO(vault: Vault): VaultIO {
-  if (!(vault.adapter instanceof FileSystemAdapter)) throw new Error('Journal Media currently requires a desktop filesystem vault.');
+  if (!(vault.adapter instanceof FileSystemAdapter)) throw new Error('Image Ledger currently requires a desktop filesystem vault.');
   const basePath = vault.adapter.getBasePath();
   const resolve = (relative: string) => {
     const full = path.resolve(basePath, relative);
@@ -38,7 +38,7 @@ export function createVaultIO(vault: Vault): VaultIO {
     readBinary: async p => new Uint8Array(await vault.adapter.readBinary(p)),
     mkdir: folder,
     write: async (p, text) => {
-      if (p.startsWith('.journal-media/')) return durableHiddenWrite(p, text);
+      if (p.startsWith('.image-ledger/')) return durableHiddenWrite(p, text);
       const file = vault.getAbstractFileByPath(p);
       if (file instanceof TFile) {
         if (await vault.read(file) !== text) await vault.modify(file, text);
@@ -47,17 +47,17 @@ export function createVaultIO(vault: Vault): VaultIO {
       }
     },
     writeBinary: async (p, bytes, mtime) => {
-      if (p.startsWith('.journal-media/')) return durableHiddenWrite(p, bytes);
+      if (p.startsWith('.image-ledger/')) return durableHiddenWrite(p, bytes);
       if (await vault.adapter.exists(p)) throw new Error(`Refusing to overwrite existing image: ${p}`);
       const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       await vault.createBinary(p, buffer, mtime ? {mtime} : undefined);
     },
     remove: async p => {
-      if (!p.startsWith('.journal-media/')) throw new Error('Only staging files may be removed automatically.');
+      if (!/^\.image-ledger\/staging\/[0-9a-f-]{36}\.(?:json|jpg|png)$/.test(p)) throw new Error('Only staging files may be removed automatically.');
       try { await unlink(resolve(p)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     },
     recordPaths: async () => vault.getMarkdownFiles().filter(file => /(?:^|\/)image-records\/[^/]+\.md$/.test(file.path)).map(file => file.path),
-    pendingPaths: async () => await vault.adapter.exists('.journal-media/staging') ? (await vault.adapter.list('.journal-media/staging')).files : [],
+    pendingPaths: async () => await vault.adapter.exists('.image-ledger/staging') ? (await vault.adapter.list('.image-ledger/staging')).files : [],
   };
 }

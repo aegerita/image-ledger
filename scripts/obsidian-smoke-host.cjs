@@ -14,7 +14,7 @@ function verifyVault(app, config) {
   assert.match(config.runId, /^[0-9a-f-]{36}$/);
   assert.ok(['main', 'recovery'].includes(config.phase));
   assert.ok(Number.isFinite(config.deadline) && Date.now() < config.deadline, 'Smoke deadline exceeded');
-  const marker = JSON.parse(fs.readFileSync(path.join(config.vault, '.journal-media-test-vault.json'), 'utf8'));
+  const marker = JSON.parse(fs.readFileSync(path.join(config.vault, '.image-ledger-test-vault.json'), 'utf8'));
   assert.equal(marker.version, 1, 'Not a generated test vault');
   for (const [name, expected] of Object.entries(fixtures)) {
     assert.equal(marker.fixtures[name], expected);
@@ -23,14 +23,14 @@ function verifyVault(app, config) {
   assert.deepEqual(Object.keys(config.artifacts).sort(), ['main.js', 'manifest.json', 'styles.css']);
   for (const [name, expected] of Object.entries(config.artifacts)) {
     assert.match(expected, /^[0-9a-f]{64}$/);
-    assert.equal(hash(path.join(config.vault, '.obsidian/plugins/journal-media', name)), expected, 'Plugin build changed');
+    assert.equal(hash(path.join(config.vault, '.obsidian/plugins/image-ledger', name)), expected, 'Plugin build changed');
   }
 }
 
 module.exports = async (app, config) => {
   verifyVault(app, config);
   const root = fs.realpathSync(config.vault);
-  const directory = path.join(root, '.journal-media-smoke');
+  const directory = path.join(root, '.image-ledger-smoke');
   const receiptPath = path.join(directory, config.phase + '.json');
   fs.mkdirSync(directory, {recursive: true});
   const receipt = {runId: config.runId, phase: config.phase, vault: root, obsidianVersion: require('electron').ipcRenderer.sendSync('version'), status: 'RUNNING', startedAt: new Date().toISOString(), checks: [], methods: 'Loaded plugin, real editor/modal/Bases DOM controls; generated paste/drop events. No native OS gestures.'};
@@ -62,9 +62,9 @@ module.exports = async (app, config) => {
     catch (error) {item.status = 'FAIL'; throw error;}
     finally {item.finishedAt = new Date().toISOString(); save();}
   };
-  const plugin = () => app.plugins.plugins['journal-media'];
+  const plugin = () => app.plugins.plugins['image-ledger'];
   const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-  const snapshot = file => JSON.parse(read(file).match(/<!-- journal-media:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```/)[1]);
+  const snapshot = file => JSON.parse(read(file).match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```/)[1]);
   const record = file => plugin().store.allRecords().find(item => item.sha256 === fixtures[file]);
   const embed = (item, note) => `![${item.description}](${path.posix.relative(path.posix.dirname(note), item.imagePath)})`;
   const verifyRecord = item => {
@@ -76,7 +76,13 @@ module.exports = async (app, config) => {
     assert.ok(read(saved.recordPath).includes('caption_status: ' + JSON.stringify(saved.captionStatus)));
     assert.ok(read(saved.sidecarPath).includes(saved.description));
     assert.ok(read(saved.sidecarPath).includes('urn:uuid:' + saved.id));
-    for (const note of saved.journalEntries) assert.equal(read(note).split(embed(saved, note)).length - 1, 1);
+    assert.equal(saved.schemaVersion, 2);
+    assert.ok(Number.isFinite(Date.parse(saved.importedAt)), 'Missing import time');
+    assert.equal('noteDate' in saved, false, 'Image records must not invent a note date');
+    assert.equal(path.posix.dirname(saved.imagePath), 'images', 'New vaults must use flat image storage');
+    assert.equal(path.posix.dirname(saved.sidecarPath), 'images');
+    assert.equal(path.posix.dirname(saved.recordPath), 'image-records');
+    for (const note of saved.sourceNotes) assert.equal(read(note).split(embed(saved, note)).length - 1, 1);
     return saved;
   };
   const documents = () => [...new Set([app.workspace.containerEl.ownerDocument, ...['markdown', 'bases'].flatMap(type => app.workspace.getLeavesOfType(type).map(leaf => leaf.view.containerEl.ownerDocument))])];
@@ -97,7 +103,7 @@ module.exports = async (app, config) => {
     const button = [...container.querySelectorAll('button')].find(button => button.textContent.trim() === label);
     assert.ok(button, 'Missing real caption button'); button.click();
   };
-  const source = '2026/10/2026-10-17.md', other = '2027/01/2027-01-04.md';
+  const source = 'Projects/Research.md', other = '2027/01/2027-01-04.md';
   const open = async note => {
     guard(); await app.workspace.openLinkText(note, '', false);
     return wait(() => {
@@ -123,11 +129,12 @@ module.exports = async (app, config) => {
   const synchronized = (file, description) => {
     const item = record(file);
     if (!item || snapshot(item.recordPath).description !== description || !read(item.sidecarPath).includes(description)) return false;
-    return item.journalEntries.every(note => read(note).includes(embed({...item, description}, note)));
+    return item.sourceNotes.every(note => read(note).includes(embed({...item, description}, note)));
   };
   try {
-    await wait(plugin, 'Journal Media loaded');
+    await wait(plugin, 'Image Ledger loaded');
     await plugin().ensureInitialized(); await plugin().store.refresh();
+    assert.equal(plugin().settings.storageLayout, 'flat', 'New vaults must default to flat image storage');
     if (config.phase === 'main') {
       assert.equal(plugin().store.allRecords().length, 0, 'Smoke vault must be fresh');
       await step('JPEG file import and EXIF', async () => {
@@ -138,16 +145,16 @@ module.exports = async (app, config) => {
         assert.equal(jpeg.ingestMethod, 'file');
       });
       const jpegId = record('sample-exif.jpg').id;
-      await step('Cross-year duplicate reuse', async () => {
+      await step('Dated-note duplicate reuse', async () => {
         submit(await capture('sample-exif.jpg', other, 'file'), 'Synthetic JPEG.');
-        await wait(() => record('sample-exif.jpg').journalEntries.length === 2 && synchronized('sample-exif.jpg', 'Synthetic JPEG.'), 'duplicate persistence');
+        await wait(() => record('sample-exif.jpg').sourceNotes.length === 2 && synchronized('sample-exif.jpg', 'Synthetic JPEG.'), 'duplicate persistence');
         assert.equal(record('sample-exif.jpg').id, jpegId);
         assert.equal(plugin().store.allRecords().length, 1);
         verifyRecord(record('sample-exif.jpg'));
       });
       await step('Actual Bases description editor and links', async () => {
-        assert.equal(app.commands.executeCommandById('journal-media:open-image-library'), true);
-        let leaf = await wait(() => app.workspace.getLeavesOfType('bases').find(leaf => leaf.view.file?.path === 'journal-images.base'), 'Bases view');
+        assert.equal(app.commands.executeCommandById('image-ledger:open-image-library'), true);
+        let leaf = await wait(() => app.workspace.getLeavesOfType('bases').find(leaf => leaf.view.file?.path === 'image-library.base'), 'Bases view');
         app.workspace.setActiveLeaf(leaf, {focus: true});
         const jpeg = record('sample-exif.jpg');
         const row = () => [...leaf.view.containerEl.querySelectorAll('.bases-tbody .bases-tr')].find(row => row.querySelector('[data-href="' + jpeg.imagePath + '"]'));
@@ -159,13 +166,20 @@ module.exports = async (app, config) => {
         verifyRecord(record('sample-exif.jpg'));
         row().querySelector('[data-href="' + jpeg.imagePath + '"]').click();
         await wait(() => app.workspace.getActiveFile()?.path === jpeg.imagePath && app.workspace.getMostRecentLeaf()?.view.getViewType() === 'image', 'Base image link');
-        assert.equal(app.commands.executeCommandById('journal-media:open-image-library'), true);
-        leaf = await wait(() => app.workspace.getLeavesOfType('bases').find(leaf => leaf.view.file?.path === 'journal-images.base'), 'reopened Bases view');
+        assert.equal(app.commands.executeCommandById('image-ledger:open-image-library'), true);
+        leaf = await wait(() => app.workspace.getLeavesOfType('bases').find(leaf => leaf.view.file?.path === 'image-library.base'), 'reopened Bases view');
         app.workspace.setActiveLeaf(leaf, {focus: true});
         const scroller = await wait(() => leaf.view.containerEl.querySelector('.bases-view'), 'Bases table scroller'); scroller.scrollLeft = 0;
-        const sameRow = await wait(row, 'JPEG row'); scroller.scrollLeft = scroller.scrollWidth;
-        const link = await wait(() => sameRow.querySelector('[data-property="note.journal_entries"] [data-href="' + source.replace(/\.md$/, '') + '"]'), 'Base journal link');
-        link.click(); await wait(() => app.workspace.getActiveFile()?.path === source, 'Base journal target');
+        await wait(row, 'JPEG row');
+        const link = await wait(() => {
+          // Drive the real scroll handler even when the test window is hidden.
+          scroller.scrollLeft = scroller.scrollWidth;
+          scroller.dispatchEvent(new scroller.ownerDocument.defaultView.Event('scroll'));
+          const rows = leaf.view.containerEl.querySelectorAll('.bases-tbody .bases-tr');
+          assert.ok(rows.length <= 1, 'Expected only the JPEG row before PNG capture');
+          return rows[0]?.querySelector('[data-property="note.source_notes"] [data-href="' + source.replace(/\.md$/, '') + '"]');
+        }, 'Base source-note link');
+        link.click(); await wait(() => app.workspace.getActiveFile()?.path === source, 'Base source-note target');
       });
       await step('Drop handler, note switch and Describe later', async () => {
         const input = await capture('sample.png', source, 'drop');
@@ -177,7 +191,7 @@ module.exports = async (app, config) => {
       });
       await step('Edit image description command', async () => {
         await open(record('sample.png').recordPath);
-        assert.equal(app.commands.executeCommandById('journal-media:edit-image-description'), true);
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
         submit(await modal(), 'Synthetic PNG.');
         await wait(() => synchronized('sample.png', 'Synthetic PNG.'), 'caption command persistence');
         assert.equal(verifyRecord(record('sample.png')).captionStatus, 'confirmed');
@@ -185,29 +199,30 @@ module.exports = async (app, config) => {
       await step('Paste handler staged with caption open', async () => {
         const input = await capture('sample.png', other, 'paste'); assert.ok(input.isConnected);
         const pending = await wait(async () => (await plugin().store.pendingCaptures()).find(item => item.sourcePath === other), 'real paste staging');
+        assert.equal(pending.storageFolder, '', 'Dated notes must still use flat storage by default');
         assert.equal(hash(path.join(root, pending.dataPath)), fixtures['sample.png']);
-        const token = randomUUID(); plugin().__journalMediaSmokeToken = token;
+        const token = randomUUID(); plugin().__imageLedgerSmokeToken = token;
         fs.writeFileSync(path.join(directory, 'checkpoint.json'), JSON.stringify({runId: config.runId, token, pending, pngId: record('sample.png').id}), {flag: 'wx'});
       });
       receipt.status = 'AWAITING_RELOAD';
     } else {
       const checkpoint = JSON.parse(fs.readFileSync(path.join(directory, 'checkpoint.json'), 'utf8'));
       assert.equal(checkpoint.runId, config.runId);
-      assert.notEqual(plugin().__journalMediaSmokeToken, checkpoint.token, 'Plugin was not reloaded');
+      assert.notEqual(plugin().__imageLedgerSmokeToken, checkpoint.token, 'Plugin was not reloaded');
       await step('Recover real caption-open paste after app reload', async () => {
         assert.ok((await plugin().store.pendingCaptures()).some(item => item.id === checkpoint.pending.id), 'Interrupted paste staging disappeared');
-        assert.equal(app.commands.executeCommandById('journal-media:recover-captures'), true);
+        assert.equal(app.commands.executeCommandById('image-ledger:recover-captures'), true);
         submit(await modal(), 'Recovered synthetic PNG.');
         await wait(async () => (await plugin().store.pendingCaptures()).length === 0 && synchronized('sample.png', 'Recovered synthetic PNG.'), 'recovery completion');
         const png = verifyRecord(record('sample.png'));
-        assert.equal(png.id, checkpoint.pngId); assert.equal(png.journalEntries.length, 2);
+        assert.equal(png.id, checkpoint.pngId); assert.equal(png.sourceNotes.length, 2);
         assert.equal(plugin().store.allRecords().length, 2);
-        assert.deepEqual(fs.readdirSync(path.join(root, '.journal-media/staging')), []);
+        assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/staging')), []);
       });
       await step('Final records and actual audit notice', async () => {
         receipt.records = plugin().store.allRecords().map(verifyRecord);
         assert.ok(receipt.records.every(record => record.captionStatus === 'confirmed'));
-        assert.equal(app.commands.executeCommandById('journal-media:audit-images'), true);
+        assert.equal(app.commands.executeCommandById('image-ledger:audit-images'), true);
         receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit notice');
       });
       receipt.status = 'PASS';

@@ -117,10 +117,10 @@ export async function verifyTrustTarget(vault: string, artifacts: Record<string,
     assert.equal(marker.fixtures[name], sha256(bytes), 'Unknown fixture marker');
     assert.equal(sha256(await readFile(path.join(vault, 'fixtures', name))), sha256(bytes), 'Trust fixture changed');
   }
-  assert.deepEqual(JSON.parse(await readFile(path.join(vault, '.obsidian/community-plugins.json'), 'utf8')), ['journal-media'], 'Trust target enables an unknown plugin');
-  assert.deepEqual(await readdir(path.join(vault, '.obsidian/plugins')), ['journal-media'], 'Trust target contains another plugin');
+  assert.deepEqual(JSON.parse(await readFile(path.join(vault, '.obsidian/community-plugins.json'), 'utf8')), ['image-ledger'], 'Trust target enables an unknown plugin');
+  assert.deepEqual(await readdir(path.join(vault, '.obsidian/plugins')), ['image-ledger'], 'Trust target contains another plugin');
   assert.deepEqual(Object.keys(artifacts).sort(), [...artifactNames].sort());
-  for (const [name, hash] of Object.entries(artifacts)) assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/journal-media', name))), hash, 'Trust build changed');
+  for (const [name, hash] of Object.entries(artifacts)) assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', name))), hash, 'Trust build changed');
 }
 
 export async function validateFinalVault(vault: string, artifacts: Record<string, string>): Promise<{records: number; pending: number; missing: number; staging: number}> {
@@ -128,13 +128,14 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     const result: string[] = [];
     for (const entry of await readdir(path.join(vault, directory), {withFileTypes: true}).catch(error => {if (error.code === 'ENOENT') return []; throw error;})) {
       const relative = path.posix.join(directory, entry.name);
+      if (entry.name.startsWith('.') || relative === 'fixtures') continue;
       if (entry.isDirectory()) result.push(...await walk(relative)); else if (entry.isFile()) result.push(relative);
     }
     return result;
   };
-  const files = [...await walk('2026'), ...await walk('2027')];
-  const recordFiles = files.filter(file => /\/image-records\/[^/]+\.md$/.test(file));
-  const images = files.filter(file => /\/images\/[^/]+\.(jpg|png)$/.test(file));
+  const files = await walk('');
+  const recordFiles = files.filter(file => /(?:^|\/)image-records\/[^/]+\.md$/.test(file));
+  const images = files.filter(file => /(?:^|\/)images\/[^/]+\.(jpg|png)$/.test(file));
   assert.equal(recordFiles.length, 2, 'Expected one JPEG record and one PNG record');
   assert.equal(images.length, 2, 'Expected exactly two managed payloads');
   const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
@@ -152,14 +153,14 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     assert.deepEqual(record, parseRecordSnapshot(text), 'Frontmatter and snapshot differ');
     assert.equal(record.recordPath, file);
     assert.equal(record.captionStatus, 'confirmed', 'Unfinished description');
-    assert.deepEqual(new Set(record.journalEntries), new Set([sourceNote, otherNote]), 'Both note backlinks are required');
+    assert.deepEqual(new Set(record.sourceNotes), new Set([sourceNote, otherNote]), 'Both note backlinks are required');
     const bytes = await readFile(path.join(vault, record.imagePath));
     assert.equal(sha256(bytes), record.sha256); assert.equal(bytes.length, record.bytes);
     assert.deepEqual(await extractMetadata(bytes), record.metadata, 'Payload metadata differs from record');
     assert.equal(await readFile(path.join(vault, record.sidecarPath), 'utf8'), serializeSidecar(record), 'XMP differs from record');
     assert.ok(images.includes(record.imagePath), 'Payload path is outside managed images');
     recordHashes.add(record.sha256);
-    for (const note of record.journalEntries) {
+    for (const note of record.sourceNotes) {
       const text = await readFile(path.join(vault, note), 'utf8');
       assert.equal(text.split(markdownEmbed(record, note)).length - 1, 1, 'Missing/duplicate current image embed');
       const target = path.posix.relative(path.posix.dirname(note), record.imagePath).split('/').map(encodeURIComponent).join('/');
@@ -168,22 +169,22 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     }
   }
   assert.deepEqual(recordHashes, fixtureHashes, 'Managed images must match both fixtures');
-  assert.deepEqual(await readdir(path.join(vault, '.journal-media/staging')), [], 'Staging is not empty');
+  assert.deepEqual(await readdir(path.join(vault, '.image-ledger/staging')), [], 'Staging is not empty');
   assert.deepEqual(Object.keys(artifacts).sort(), [...artifactNames].sort());
   for (const file of artifactNames) {
-    assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/journal-media', file))), artifacts[file], 'Installed build changed');
+    assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', file))), artifacts[file], 'Installed build changed');
     assert.equal(sha256(await readFile(path.join(repo, file))), artifacts[file], 'Source build changed during smoke test');
   }
   return {records: 2, pending: 0, missing: 0, staging: 0};
 }
 
 function readinessCode(config: Config, nonce: string, file: string): string {
-  return `(()=>{const fs=require('node:fs'),assert=require('node:assert/strict'),c=${JSON.stringify(config)};if(typeof app==='undefined'||!app.vault?.adapter||!app.workspace)return 'STARTING';assert.equal(fs.realpathSync(app.vault.adapter.getBasePath()),c.vault,'Wrong vault during startup');if(!app.plugins?.plugins?.['journal-media'])return 'STARTING';const result={runId:c.runId,phase:c.phase,nonce:${JSON.stringify(nonce)},vault:c.vault,status:'READY'},file=${JSON.stringify(file)};fs.writeFileSync(file+'.tmp',JSON.stringify(result));fs.renameSync(file+'.tmp',file);return 'READY'})()`;
+  return `(()=>{const fs=require('node:fs'),assert=require('node:assert/strict'),c=${JSON.stringify(config)};if(typeof app==='undefined'||!app.vault?.adapter||!app.workspace)return 'STARTING';assert.equal(fs.realpathSync(app.vault.adapter.getBasePath()),c.vault,'Wrong vault during startup');if(!app.plugins?.plugins?.['image-ledger'])return 'STARTING';const result={runId:c.runId,phase:c.phase,nonce:${JSON.stringify(nonce)},vault:c.vault,status:'READY'},file=${JSON.stringify(file)};fs.writeFileSync(file+'.tmp',JSON.stringify(result));fs.renameSync(file+'.tmp',file);return 'READY'})()`;
 }
 
 function hostCode(config: Config, host: string): string {
   // The canonical path check runs before requiring any host module in the app.
-  return `void (async()=>{const fs=require('node:fs'),p=require('node:path'),assert=require('node:assert/strict'),c=${JSON.stringify(config)};const end=Math.min(c.deadline,Date.now()+10000);while(Date.now()<end&&(!app.vault?.adapter||!app.workspace))await new Promise(r=>setTimeout(r,100));assert.equal(fs.realpathSync(app.vault.adapter.getBasePath()),c.vault,'Wrong vault; no host module loaded');const h=require(${JSON.stringify(host)});h.verifyVault(app,c);await h(app,c);})().catch(error=>{const fs=require('node:fs'),p=require('node:path'),c=${JSON.stringify(config)},file=p.join(c.vault,'.journal-media-smoke',c.phase+'.json');let receipt={runId:c.runId,phase:c.phase,status:'FAIL'};try{receipt={...JSON.parse(fs.readFileSync(file,'utf8')),status:'FAIL'}}catch{}receipt.error=String(error.stack??error);fs.writeFileSync(file+'.tmp',JSON.stringify(receipt));fs.renameSync(file+'.tmp',file);})`;
+  return `void (async()=>{const fs=require('node:fs'),p=require('node:path'),assert=require('node:assert/strict'),c=${JSON.stringify(config)};const end=Math.min(c.deadline,Date.now()+10000);while(Date.now()<end&&(!app.vault?.adapter||!app.workspace))await new Promise(r=>setTimeout(r,100));assert.equal(fs.realpathSync(app.vault.adapter.getBasePath()),c.vault,'Wrong vault; no host module loaded');const h=require(${JSON.stringify(host)});h.verifyVault(app,c);await h(app,c);})().catch(error=>{const fs=require('node:fs'),p=require('node:path'),c=${JSON.stringify(config)},file=p.join(c.vault,'.image-ledger-smoke',c.phase+'.json');let receipt={runId:c.runId,phase:c.phase,status:'FAIL'};try{receipt={...JSON.parse(fs.readFileSync(file,'utf8')),status:'FAIL'}}catch{}receipt.error=String(error.stack??error);fs.writeFileSync(file+'.tmp',JSON.stringify(receipt));fs.renameSync(file+'.tmp',file);})`;
 }
 
 async function runSmoke(): Promise<void> {
@@ -198,7 +199,7 @@ async function runSmoke(): Promise<void> {
   try {
     await runCommand('npm', ['run', 'build'], deadline, {cwd: repo, timeoutMs: 30_000});
     vault = await realpath(await createTestVault());
-    const directory = path.join(vault, '.journal-media-smoke');
+    const directory = path.join(vault, '.image-ledger-smoke');
     await mkdir(directory);
     const host = path.join(directory, 'host.cjs');
     await copyFile(path.join(repo, 'scripts/obsidian-smoke-host.cjs'), host);
@@ -216,7 +217,7 @@ async function runSmoke(): Promise<void> {
     await waitForSelectedVault(vault, Math.min(deadline, Date.now() + 10_000), limit => runCommand('/usr/bin/script', ['-q', '/dev/null', binary, selected, 'vault', 'info=path'], deadline, {timeoutMs: limit}));
     await verifyTrustTarget(vault, artifacts);
     await runCommand('/usr/bin/script', ['-q', '/dev/null', binary, selected, 'plugins:restrict', 'off'], deadline);
-    await writeFile(path.join(directory, 'trust.json'), JSON.stringify({runId, vault, status: 'TRUSTED_GENERATED_ONLY', plugin: 'journal-media', artifacts}, null, 2) + '\n', {flag: 'wx'});
+    await writeFile(path.join(directory, 'trust.json'), JSON.stringify({runId, vault, status: 'TRUSTED_GENERATED_ONLY', plugin: 'image-ledger', artifacts}, null, 2) + '\n', {flag: 'wx'});
     const main: Config = {vault, runId, deadline, phase: 'main', artifacts};
     const runPhase = async (config: Config, terminal: string) => {
       const ready = {runId, phase: config.phase, nonce: randomUUID(), vault: vault!};
@@ -238,7 +239,7 @@ async function runSmoke(): Promise<void> {
     console.log(`PASS in ${(final.durationMs / 1000).toFixed(1)}s. Receipts: ${directory}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (vault) await writeFile(path.join(vault, '.journal-media-smoke/result.json'), JSON.stringify({runId, status: 'FAIL', vault, durationMs: Date.now() - started, error: message}, null, 2) + '\n', {flag: 'wx'}).catch(() => {});
+    if (vault) await writeFile(path.join(vault, '.image-ledger-smoke/result.json'), JSON.stringify({runId, status: 'FAIL', vault, durationMs: Date.now() - started, error: message}, null, 2) + '\n', {flag: 'wx'}).catch(() => {});
     throw new Error(`${message}\nPreserved vault: ${vault ?? '(not created)'}`);
   } finally {clearTimeout(timer);}
 }

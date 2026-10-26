@@ -8,6 +8,8 @@ npm test
 
 This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, descriptions, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. It does not exercise the loaded Obsidian app.
 
+GitHub Actions runs this command with Node.js 22 on Ubuntu for every push and pull request. The `Build and test` job checks the build and unit/filesystem tests. Obsidian host checks remain local because they require a running app and its enabled CLI.
+
 ## Obsidian host test
 
 ```sh

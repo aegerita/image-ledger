@@ -30,6 +30,8 @@ Capture flow: stage received bytes, prepare or reuse an image, ask for a descrip
 
 Keep related behavior together. Extract a module when it has a clear job; avoid adding layers or folders just to shorten a file. Linear holds active plans; this guide describes the current code.
 
+This is one plugin package, following the [Obsidian sample plugin](https://github.com/obsidianmd/obsidian-sample-plugin) layout. Supporting scripts live in `scripts/`. Synthetic fixture generators are tracked in `tests/fixtures.ts` and `scripts/test-vault.ts`; their generated `test-vaults/` output stays ignored.
+
 ## Verify changes
 
 Run `npm test` for code changes. For plugin or UI changes, also run:
@@ -56,3 +58,11 @@ Optional `--enable` updates the saved community-plugin list, disables `obsidian-
 ## Before submitting
 
 Describe the user-visible change and checks run. Keep generated builds, dependencies, test vaults, and personal data out of commits. Update the README when the user workflow changes; keep technical details here and test procedures in TESTING.md.
+
+Use an issue branch such as `codex/obs-7-github-setup` and include `OBS-7` in its pull request title. Link the Linear issue in the pull request description. Repository access for automatic linking is configured through [Linear's GitHub integration](https://linear.app/docs/github-integration).
+
+## Prepare a release
+
+Update the version in `package.json`, `package-lock.json`, and `manifest.json`, and add its minimum Obsidian version to `versions.json`. The tests check that these agree. After changes pass review, push a tag matching the version exactly, such as `0.1.0`, without a `v` prefix.
+
+The release workflow runs `npm test`, checks the tag, and creates a draft with `main.js`, `manifest.json`, and `styles.css`. Review the draft and run the local Obsidian host test before publishing. Update the README installation steps when the first downloadable release is published.

@@ -2,14 +2,18 @@
 
 Save JPEG and PNG images in your notes, describe them, and find them again in an image library. Image Ledger keeps local copies with the metadata it receives. Any Markdown note works; no journal setup is needed.
 
-Requires desktop Obsidian 1.10 or later. This is a development build; earlier experimental formats are not migrated.
+Requires desktop Obsidian 1.10 or later. Tested on macOS. This is an early development build; earlier experimental formats are not migrated.
 
 ## Install
+
+There is no downloadable release yet. Installation currently requires building from source. If you do not build plugins, wait for a release with ready-to-copy files. Try development builds in a separate vault first.
 
 1. [Build the plugin from source](CONTRIBUTING.md#development-setup).
 2. Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/plugins/image-ledger/` folder. Create that folder if needed.
 3. Reload Obsidian and enable **Image Ledger** in **Settings → Community plugins**.
 4. Disable any other plugin that handles image pastes, so only one plugin handles each image.
+
+`.obsidian` is the hidden settings folder inside your vault. Enable **Bases** under **Settings → Core plugins** to browse the image library.
 
 To update, replace those three files with a new build and reload the plugin.
 
@@ -23,15 +27,15 @@ Choose **Describe later** to keep the image without finishing its description. R
 
 ## Where your images go
 
-By default, each image gets a unique filename in `images/`, a metadata note in `image-records/`, and an `.xmp` sidecar beside the image. The library is `image-library.base`.
+By default, each image gets a unique filename in `images/`, a metadata note in `image-records/`, and a matching `.xmp` metadata file beside the image. Open `image-library.base` to browse the library in Obsidian.
 
 In **Settings → Image Ledger**, **Image storage** can group new files by import year or by the year in a note's name or folder. Existing images stay in place. You can also turn off paste/drop handling or the **Image details** link.
 
-Pasting identical bytes again reuses the saved image, even from another note. Removing an embed or deleting a note does not delete its image. Keep generated image filenames and record snapshot blocks intact; edit descriptions through the library or plugin command.
+Adding the exact same image file again reuses the saved copy, even from another note. Removing an image from a note or deleting a note does not delete its saved file. Avoid renaming generated files or editing the generated record text; change descriptions through the library or plugin command.
 
 ## Privacy and limits
 
-Image Ledger makes no network requests and provides no upload, AI descriptions, or independent backup. Your vault's sync service may still copy its files; configure exclusions in that service if needed. The source installer adds Git exclusions, which do not control other sync services.
+Image Ledger makes no network requests and provides no upload, AI descriptions, or independent backup. Your vault's sync service may still copy its files; configure exclusions in that service if needed.
 
 Received image bytes stay unchanged. Clipboard images may already have lost original metadata; use **Import JPEG or PNG** with the original file when that matters. HEIC and Live Photo videos are not supported. Source files are never deleted.
 

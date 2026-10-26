@@ -5,7 +5,7 @@ Use the Caveman and Ponytail skills. Keep changes small and reports concise.
 ## Documentation and source
 
 - Write for the reader's next task. README owns installation, everyday use, and user-facing limits. CONTRIBUTING.md owns developer setup and the source map. TESTING.md owns test procedures. Avoid repeating them across files.
-- Document current behavior. Keep plans in Linear and dated evidence in `docs/smoke-tests/`; neither is a current test result.
+- Document current behavior. Keep plans in Linear. Store dated smoke reports and raw receipts locally in ignored `docs/smoke-tests/` or attach them to Linear; do not commit them or treat them as current test results.
 - Keep `src/main.ts` focused on registration, capture/recovery in `src/captures.ts`, image data in `src/images/`, and host integration in `src/obsidian/`. Each owner keeps its related state and behavior; avoid forwarding methods and layers that only shorten files.
 - Use readable blocks and one operation per statement. Do not pack callbacks, validation, or state changes into dense one-line expressions.
 - Keep descriptions, commands, and examples brief and concrete. Update the relevant guide when behavior changes.

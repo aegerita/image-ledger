@@ -5,8 +5,8 @@ import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { extractMetadata, sha256 } from '../src/media';
-import { markdownEmbed, parseRecord, parseRecordSnapshot, serializeSidecar } from '../src/records';
+import { extractMetadata, sha256 } from '../src/images/media';
+import { markdownEmbed, parseRecord, parseRecordSnapshot, serializeSidecar } from '../src/images/records';
 import { createTestVault, markerName, sourceNote, otherNote } from './test-vault';
 import { PNG, jpegWithExif } from '../tests/fixtures';
 

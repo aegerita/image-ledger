@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createTestVault, markerName, sourceNote, otherNote } from '../scripts/test-vault';
-import { extractMetadata, sha256 } from '../src/media';
+import { extractMetadata, sha256 } from '../src/images/media';
 
 test('test vault contains only synthetic inputs, isolated settings and the current build', async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-setup-'));
@@ -60,4 +60,27 @@ test('installer preserves settings and unrelated plugins, enabling Image Ledger 
     await install('--enable');
     assert.equal(await readFile(backup, 'utf8'), originalEnabled, 'Repeated installs must preserve the original enabled-plugin backup');
   } finally {await rm(parent, {recursive: true, force: true});}
+});
+
+test('installer preserves an unreadable existing gitignore instead of replacing it', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-install-'));
+  try {
+    const vault = await createTestVault(path.join(parent, 'vault'));
+    const ignorePath = path.join(vault, '.gitignore');
+    const original = 'private-notes/\nsecret.txt\n';
+    await writeFile(ignorePath, original);
+    await chmod(ignorePath, 0o200);
+    try {
+      await assert.rejects(promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL('../scripts/install.mjs', import.meta.url)), '--vault', vault,
+      ]), /EACCES.*\.gitignore/s);
+    } finally {
+      await chmod(ignorePath, 0o600);
+    }
+    assert.equal(await readFile(ignorePath, 'utf8'), original);
+  } finally {
+    await rm(parent, {recursive: true, force: true});
+  }
 });

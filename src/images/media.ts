@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import exifr from 'exifr';
-import type { ImageFormat, ImageMetadata } from './types';
+import type { ImageFormat, ImageMetadata } from './model';
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 const SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
@@ -29,9 +29,16 @@ function pngDimensions(bytes: Uint8Array): Dimensions {
       const height = uint32(bytes, offset + 12);
       const depth = bytes[offset + 16];
       const color = bytes[offset + 17];
-      const validDepths: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
-      if (!width || !height || width > 0x7fffffff || height > 0x7fffffff ||
-          !validDepths[color]?.includes(depth) || bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] > 1) {
+      const validDepths: Record<number, number[]> = {
+        0: [1, 2, 4, 8, 16],
+        2: [8, 16],
+        3: [1, 2, 4, 8],
+        4: [8, 16],
+        6: [8, 16],
+      };
+      if (!width || !height || width > 0x7fffffff || height > 0x7fffffff
+        || !validDepths[color]?.includes(depth)
+        || bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] > 1) {
         invalidImage('PNG');
       }
       dimensions = { width, height };
@@ -96,10 +103,6 @@ export function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-export function newImageId(): string {
-  return randomUUID();
-}
-
 function jsonSafe(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -132,14 +135,30 @@ function normalizeOffset(value: string | null): string | null {
   return `${match[1]}${match[2]}:${match[3]}`;
 }
 
-function captureTime(raw: Record<string, unknown>): Pick<ImageMetadata, 'capturedAt' | 'captureTimeRaw' | 'captureTimeOffset' | 'captureTimeStatus' | 'warning'> {
+function captureTime(raw: Record<string, unknown>): Pick<
+  ImageMetadata,
+  'capturedAt' | 'captureTimeRaw' | 'captureTimeOffset' | 'captureTimeStatus' | 'warning'
+> {
   const original = sourceString(raw.DateTimeOriginal);
   const source = original ?? sourceString(raw.CreateDate) ?? sourceString(raw.DateTimeDigitized);
-  if (!source) return { capturedAt: null, captureTimeRaw: null, captureTimeOffset: null, captureTimeStatus: 'missing_from_received_file' };
+  if (!source) {
+    return {
+      capturedAt: null,
+      captureTimeRaw: null,
+      captureTimeOffset: null,
+      captureTimeStatus: 'missing_from_received_file',
+    };
+  }
   const offsetRaw = sourceString(original ? raw.OffsetTimeOriginal : raw.OffsetTimeDigitized);
   const subsecondRaw = sourceString(original ? raw.SubSecTimeOriginal : raw.SubSecTimeDigitized);
   const match = /^(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/.exec(source.trim());
-  const unavailable = { capturedAt: null, captureTimeRaw: source, captureTimeOffset: offsetRaw, captureTimeStatus: 'missing_from_received_file' as const, warning: 'The source capture date could not be interpreted; its original value is preserved in metadata.' };
+  const unavailable = {
+    capturedAt: null,
+    captureTimeRaw: source,
+    captureTimeOffset: offsetRaw,
+    captureTimeStatus: 'missing_from_received_file' as const,
+    warning: 'The source capture date could not be interpreted; its original value is preserved in metadata.',
+  };
   if (!match) return unavailable;
   const [, year, month, day, hour, minute, second, sourceFraction, inlineOffset] = match;
   const yearNumber = Number(year);
@@ -147,7 +166,11 @@ function captureTime(raw: Record<string, unknown>): Pick<ImageMetadata, 'capture
   const dayNumber = Number(day);
   const leap = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
   const monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (monthNumber < 1 || monthNumber > 12 || dayNumber < 1 || dayNumber > monthDays[monthNumber - 1] || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return unavailable;
+  if (monthNumber < 1 || monthNumber > 12
+    || dayNumber < 1 || dayNumber > monthDays[monthNumber - 1]
+    || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) {
+    return unavailable;
+  }
   const offset = normalizeOffset(offsetRaw ?? inlineOffset ?? null);
   const fraction = sourceFraction ?? (subsecondRaw && /^\d+$/.test(subsecondRaw.trim()) ? subsecondRaw.trim() : null);
   return {
@@ -155,7 +178,9 @@ function captureTime(raw: Record<string, unknown>): Pick<ImageMetadata, 'capture
     captureTimeRaw: source,
     captureTimeOffset: offsetRaw ?? inlineOffset ?? null,
     captureTimeStatus: offset ? 'source_offset' : 'timezone_unknown',
-    ...((offsetRaw || inlineOffset) && !offset ? { warning: 'The source timezone offset could not be interpreted; capture time is kept without an assumed timezone.' } : {}),
+    ...((offsetRaw || inlineOffset) && !offset ? {
+      warning: 'The source timezone offset could not be interpreted; capture time is kept without an assumed timezone.',
+    } : {}),
   };
 }
 
@@ -166,19 +191,39 @@ export async function extractMetadata(bytes: Uint8Array): Promise<ImageMetadata>
   let warning: string | undefined;
   try {
     const parsed: unknown = await exifr.parse(bytes, {
-      translateKeys: true, translateValues: false, reviveValues: false,
-      tiff: true, exif: true, gps: true, ifd1: false, xmp: true, iptc: true, icc: false, ihdr: true,
+      translateKeys: true,
+      translateValues: false,
+      reviveValues: false,
+      tiff: true,
+      exif: true,
+      gps: true,
+      ifd1: false,
+      xmp: true,
+      iptc: true,
+      icc: false,
+      ihdr: true,
     });
     const safe = jsonSafe(parsed);
-    if (safe && typeof safe === 'object' && !Array.isArray(safe)) raw = safe as Record<string, unknown>;
+    if (safe && typeof safe === 'object' && !Array.isArray(safe)) {
+      raw = safe as Record<string, unknown>;
+    }
   } catch {
     warning = 'Some source metadata could not be read. The received image bytes were preserved unchanged.';
   }
   const capture = captureTime(raw);
-  const orientation = typeof raw.Orientation === 'number' && Number.isInteger(raw.Orientation) && raw.Orientation >= 1 && raw.Orientation <= 8 ? raw.Orientation : null;
+  const orientation = typeof raw.Orientation === 'number'
+    && Number.isInteger(raw.Orientation)
+    && raw.Orientation >= 1 && raw.Orientation <= 8
+    ? raw.Orientation : null;
   return {
-    ...capture, ...dimensions, orientation,
-    cameraMake: sourceString(raw.Make), cameraModel: sourceString(raw.Model), raw,
-    ...((warning || capture.warning) ? { warning: [warning, capture.warning].filter(Boolean).join(' ') } : {}),
+    ...capture,
+    ...dimensions,
+    orientation,
+    cameraMake: sourceString(raw.Make),
+    cameraModel: sourceString(raw.Model),
+    raw,
+    ...((warning || capture.warning) ? {
+      warning: [warning, capture.warning].filter(Boolean).join(' '),
+    } : {}),
   };
 }

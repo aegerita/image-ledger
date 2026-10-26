@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { assertSelectedVault, cliInvocation, runCommand, validateFinalVault, verifyTrustTarget, waitForReady, waitForReceipt, waitForSelectedVault } from '../scripts/obsidian-smoke';
 import { createTestVault, markerName } from '../scripts/test-vault';
-import { sha256 } from '../src/media';
+import { sha256 } from '../src/images/media';
 
 const host = createRequire(import.meta.url)('../scripts/obsidian-smoke-host.cjs');
 const runId = randomUUID();

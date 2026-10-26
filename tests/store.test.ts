@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, unlink, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { MediaStore, storageFolder, type VaultIO } from '../src/store';
-import { sha256 } from '../src/media';
-import { parseRecord } from '../src/records';
+import { MediaStore, storageFolder, type VaultIO } from '../src/images/store';
+import { sha256 } from '../src/images/media';
+import { parseRecord } from '../src/images/records';
 import type { StorageLayout } from '../src/settings';
 
 // A complete 1×1 PNG, kept as fixed bytes so preservation assertions are independent of the implementation.
@@ -50,6 +50,18 @@ test('saves byte-identical UUID image, caption record, sidecar and Base', async 
     assert.equal((await f.store.pendingCaptures()).length, 0);
   } finally {await f.cleanup();}
 });
+test('stages captures with distinct UUIDv4 image names', async () => {
+  const f = await fixture();
+  try {
+    const captures = await Promise.all(Array.from({length: 100}, () =>
+      f.store.stage({bytes: PNG, method: 'clipboard'}, 'Projects/Research.md')));
+    const ids = captures.map(capture => capture.id);
+    for (const id of ids) {
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    }
+    assert.equal(new Set(ids).size, ids.length);
+  } finally {await f.cleanup();}
+});
 test('restart recovers staged capture and duplicate paste reuses its UUID across years', async () => {
   const f = await fixture();
   try {
@@ -83,6 +95,47 @@ test('restores a missing identical local image but refuses to overwrite changed 
     await writeFile(path.join(f.root, first.record.imagePath), 'changed bytes');
     await assert.rejects(f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, '2026/c.md')), /differs from its recorded hash/);
     assert.equal(await readFile(path.join(f.root, first.record.imagePath), 'utf8'), 'changed bytes');
+  } finally {await f.cleanup();}
+});
+
+test('Describe later preserves newer saved properties and references while a duplicate prompt is open', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'First.md'));
+    await f.store.describe(first, 'Original description');
+    const duplicate = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Second.md'));
+    const current = {
+      ...first.record,
+      description: 'Edited in Bases',
+      captionStatus: 'pending' as const,
+      sourceName: 'Updated source name',
+      sourceNotes: ['First.md', 'Third.md'],
+    };
+    await f.store.persist(current);
+    const saved = await f.store.describe(duplicate, null);
+    assert.equal(saved.description, current.description);
+    assert.equal(saved.captionStatus, current.captionStatus);
+    assert.equal(saved.sourceName, current.sourceName);
+    assert.deepEqual(saved.sourceNotes, ['First.md', 'Third.md', 'Second.md']);
+    assert.equal(duplicate.previous.description, current.description);
+
+    await f.store.persist({...saved, description: 'Another saved edit'});
+    const explicit = await f.store.describe(duplicate, 'My chosen replacement');
+    assert.equal(explicit.description, 'My chosen replacement');
+    assert.equal(duplicate.previous.description, 'Another saved edit');
+    assert.deepEqual(explicit.sourceNotes, saved.sourceNotes);
+  } finally {await f.cleanup();}
+});
+
+test('description save refuses an unreadable current record and leaves staging recoverable', async () => {
+  const f = await fixture();
+  try {
+    const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'First.md');
+    const prepared = await f.store.prepare(pending);
+    await f.io.write(prepared.record.recordPath, 'Malformed record');
+    await assert.rejects(f.store.describe(prepared, null), /record changed or cannot be read/);
+    assert.equal(await f.io.read(prepared.record.recordPath), 'Malformed record');
+    assert.deepEqual((await f.store.pendingCaptures()).map(item => item.id), [pending.id]);
   } finally {await f.cleanup();}
 });
 test('failed record write leaves recoverable staging and never reports successful completion', async () => {

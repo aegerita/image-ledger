@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sha256 } from '../src/media';
+import { sha256 } from '../src/images/media';
 import { PNG, jpegWithExif } from '../tests/fixtures';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

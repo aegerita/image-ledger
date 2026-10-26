@@ -1,12 +1,16 @@
 import { posix } from 'node:path';
-import type { ImageMetadata, ImageRecord } from './types';
+import type { ImageMetadata, ImageRecord } from './model';
 
 const RECORD_START = '<!-- image-ledger:record -->';
 const RECORD_END = '<!-- /image-ledger:record -->';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
-const RECORD_FIELDS = new Set(['schemaVersion', 'id', 'description', 'captionStatus', 'imagePath', 'recordPath', 'sidecarPath',
-  'sourceName', 'sourceLastModified', 'ingestMethod', 'importedAt', 'sourceNotes', 'sha256', 'bytes', 'format', 'metadata']);
+const RECORD_FIELDS = new Set([
+  'schemaVersion', 'id', 'description', 'captionStatus',
+  'imagePath', 'recordPath', 'sidecarPath',
+  'sourceName', 'sourceLastModified', 'ingestMethod', 'importedAt', 'sourceNotes',
+  'sha256', 'bytes', 'format', 'metadata',
+]);
 
 /** Keep captions useful both as one-line Markdown alt text and Bases properties. */
 export function normalizeDescription(text: string): string {
@@ -22,8 +26,13 @@ export function markdownEmbed(record: ImageRecord, sourcePath: string): string {
   assertVaultPath(record.imagePath);
   const relative = posix.relative(posix.dirname(sourcePath), record.imagePath);
   // Escape each URL segment, retaining the relative ../ path components.
-  const target = relative.split('/').map((segment) => encodeURIComponent(segment)).join('/');
-  const alt = normalizeDescription(record.description).replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+  const target = relative.split('/').map(segment => encodeURIComponent(segment)
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')).join('/');
+  const alt = normalizeDescription(record.description)
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
   return `![${alt}](${target})`;
 }
 
@@ -80,7 +89,9 @@ export function serializeRecord(record: ImageRecord): string {
     '',
   ];
   // An explicit empty YAML array is distinguishable from a null property.
-  if (record.sourceNotes.length === 0) lines[lines.indexOf('source_notes:')] = 'source_notes: []';
+  if (record.sourceNotes.length === 0) {
+    lines[lines.indexOf('source_notes:')] = 'source_notes: []';
+  }
   return lines.join('\n');
 }
 
@@ -91,7 +102,9 @@ export function parseRecordSnapshot(markdown: string): ImageRecord | null {
     if (!match) return null;
     const value: unknown = JSON.parse(match[1]);
     return isImageRecord(value) ? value : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function parseRecord(markdown: string): ImageRecord | null {
@@ -136,12 +149,19 @@ function readSourceNotes(frontmatter: string): string[] | undefined {
   const strings: string[] = [];
   if (inline) {
     const values: unknown = JSON.parse(inline);
-    if (!Array.isArray(values) || !values.every(value => typeof value === 'string')) throw new Error('Invalid note links.');
+    if (!Array.isArray(values) || !values.every(value => typeof value === 'string')) {
+      throw new Error('Invalid note links.');
+    }
     strings.push(...values);
   } else {
-    for (let index = start + 1; index < lines.length && /^\s/.test(lines[index]); index++) {
-      const item = /^\s+-\s+(.+)$/.exec(lines[index]);
-      if (!item) continue;
+    for (let index = start + 1; index < lines.length; index++) {
+      const line = lines[index];
+      if (!line.trim() || /^\s*#/.test(line)) continue;
+      const item = /^\s*-\s+(.+)$/.exec(line);
+      if (!item) {
+        if (/^[^\s:#][^:]*:/.test(line)) break;
+        throw new Error('Invalid note list.');
+      }
       const value = readFrontmatterScalar(`item: ${item[1]}`, 'item');
       if (typeof value !== 'string') throw new Error('Invalid note link.');
       strings.push(value);
@@ -160,7 +180,9 @@ function readSourceNotes(frontmatter: string): string[] | undefined {
 export function serializeSidecar(record: ImageRecord): string {
   if (!isImageRecord(record)) throw new Error('Cannot serialize an invalid image record.');
   const description = xml(normalizeDescription(record.description));
-  const created = record.metadata.capturedAt === null ? '' : `\n      <xmp:CreateDate>${xml(record.metadata.capturedAt)}</xmp:CreateDate>`;
+  const created = record.metadata.capturedAt === null
+    ? ''
+    : `\n      <xmp:CreateDate>${xml(record.metadata.capturedAt)}</xmp:CreateDate>`;
   return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Image Ledger">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -218,7 +240,10 @@ function wikiLink(vaultPath: string): string {
 }
 
 function assertVaultPath(value: string): void {
-  if (typeof value !== 'string' || !value || posix.isAbsolute(value) || /[\\\u0000-\u001f\[\]#|^]/.test(value) || /^[a-z][a-z\d+.-]*:/i.test(value)) {
+  if (typeof value !== 'string' || !value
+    || posix.isAbsolute(value)
+    || /[\\\u0000-\u001f\[\]#|^]/.test(value)
+    || /^[a-z][a-z\d+.-]*:/i.test(value)) {
     throw new Error('Image records require safe vault-relative paths.');
   }
   if (value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
@@ -237,11 +262,18 @@ function isNullableNumber(value: unknown): value is number | null {
 function isMetadata(value: unknown): value is ImageMetadata {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const item = value as Partial<ImageMetadata>;
-  return isNullableString(item.capturedAt) && isNullableString(item.captureTimeRaw) && isNullableString(item.captureTimeOffset)
+  return isNullableString(item.capturedAt)
+    && isNullableString(item.captureTimeRaw)
+    && isNullableString(item.captureTimeOffset)
     && ['source_offset', 'timezone_unknown', 'missing_from_received_file'].includes(item.captureTimeStatus ?? '')
-    && isNullableNumber(item.width) && isNullableNumber(item.height) && isNullableNumber(item.orientation)
-    && isNullableString(item.cameraMake) && isNullableString(item.cameraModel)
-    && typeof item.raw === 'object' && item.raw !== null && !Array.isArray(item.raw)
+    && isNullableNumber(item.width)
+    && isNullableNumber(item.height)
+    && isNullableNumber(item.orientation)
+    && isNullableString(item.cameraMake)
+    && isNullableString(item.cameraModel)
+    && typeof item.raw === 'object'
+    && item.raw !== null
+    && !Array.isArray(item.raw)
     && (item.warning === undefined || typeof item.warning === 'string');
 }
 
@@ -249,7 +281,8 @@ function isImageRecord(value: unknown): value is ImageRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   if (Object.keys(value).some(key => !RECORD_FIELDS.has(key))) return false;
   const item = value as Partial<ImageRecord>;
-  if (item.schemaVersion !== 2 || typeof item.id !== 'string' || !UUID.test(item.id)
+  if (item.schemaVersion !== 2
+    || typeof item.id !== 'string' || !UUID.test(item.id)
     || typeof item.description !== 'string' || !item.description.trim()
     || (item.captionStatus !== 'confirmed' && item.captionStatus !== 'pending')
     || typeof item.sha256 !== 'string' || !SHA256.test(item.sha256)
@@ -258,7 +291,9 @@ function isImageRecord(value: unknown): value is ImageRecord {
     || !isNullableString(item.sourceName) || !isNullableNumber(item.sourceLastModified)
     || !['clipboard', 'drop', 'file'].includes(item.ingestMethod ?? '')
     || typeof item.importedAt !== 'string' || !Number.isFinite(Date.parse(item.importedAt))
-    || !Array.isArray(item.sourceNotes) || !isMetadata(item.metadata)) return false;
+    || !Array.isArray(item.sourceNotes) || !isMetadata(item.metadata)) {
+    return false;
+  }
   try {
     for (const path of [item.imagePath, item.recordPath, item.sidecarPath, ...item.sourceNotes]) {
       if (typeof path !== 'string') return false;
@@ -267,7 +302,9 @@ function isImageRecord(value: unknown): value is ImageRecord {
     if (posix.basename(item.imagePath!) !== `${item.id}.${item.format}`
       || posix.basename(item.recordPath!) !== `${item.id}.md`
       || posix.basename(item.sidecarPath!) !== `${item.id}.xmp`
-      || !item.sourceNotes.every((path) => path.endsWith('.md'))) return false;
+      || !item.sourceNotes.every((path) => path.endsWith('.md'))) {
+      return false;
+    }
     return true;
   } catch {
     return false;

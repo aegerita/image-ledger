@@ -1,5 +1,6 @@
 export type ImageFormat = 'jpg' | 'png';
 export type CaptureTimeStatus = 'source_offset' | 'timezone_unknown' | 'missing_from_received_file';
+
 export interface ImageMetadata {
   capturedAt: string | null;
   captureTimeRaw: string | null;
@@ -13,6 +14,7 @@ export interface ImageMetadata {
   raw: Record<string, unknown>;
   warning?: string;
 }
+
 export interface ImageRecord {
   schemaVersion: 2;
   id: string;
@@ -31,6 +33,7 @@ export interface ImageRecord {
   format: ImageFormat;
   metadata: ImageMetadata;
 }
+
 export interface MediaInput {
   bytes: Uint8Array;
   name?: string;

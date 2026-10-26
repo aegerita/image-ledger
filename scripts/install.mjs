@@ -17,7 +17,10 @@ for (const file of ['main.js', 'manifest.json', 'styles.css']) {
 const state = path.join(vault, '.image-ledger');
 await mkdir(state, {recursive: true});
 const ignorePath = path.join(vault, '.gitignore');
-let ignore = await readFile(ignorePath, 'utf8').catch(() => '');
+let ignore = await readFile(ignorePath, 'utf8').catch(error => {
+  if (error.code === 'ENOENT') return '';
+  throw error;
+});
 for (const pattern of ['images/', '.image-ledger/']) {
   if (!ignore.split(/\r?\n/).some(line => line.trim() === pattern)) ignore = `${ignore.trimEnd()}\n${pattern}\n`;
 }

@@ -65,7 +65,7 @@ module.exports = async (app, config) => {
   const plugin = () => app.plugins.plugins['image-ledger'];
   const read = file => fs.readFileSync(path.join(root, file), 'utf8');
   const snapshot = file => JSON.parse(read(file).match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```/)[1]);
-  const record = file => plugin().store.allRecords().find(item => item.sha256 === fixtures[file]);
+  const record = file => plugin().library.store.allRecords().find(item => item.sha256 === fixtures[file]);
   const embed = (item, note) => `![${item.description}](${path.posix.relative(path.posix.dirname(note), item.imagePath)})`;
   const verifyRecord = item => {
     assert.ok(item, 'Missing managed record');
@@ -108,7 +108,7 @@ module.exports = async (app, config) => {
     guard(); await app.workspace.openLinkText(note, '', false);
     return wait(() => {
       const view = app.workspace.getMostRecentLeaf()?.view;
-      return view?.file?.path === note && view.editor && plugin().editors.get(view.editor) ? view : null;
+      return view?.file?.path === note && view.editor && plugin().notes.hasEditor(view.editor) ? view : null;
     }, 'tracked editor: ' + note);
   };
   const capture = async (fixture, note, method) => {
@@ -117,7 +117,7 @@ module.exports = async (app, config) => {
     const win = view.containerEl.ownerDocument.defaultView;
     const file = new win.File([fs.readFileSync(path.join(root, 'fixtures', fixture))], fixture, {type: fixture.endsWith('.png') ? 'image/png' : 'image/jpeg', lastModified: fs.statSync(path.join(root, 'fixtures', fixture)).mtimeMs});
     guard();
-    if (method === 'file') plugin().captureFiles([file], plugin().captureContext(view.editor, view.file), 'file');
+    if (method === 'file') plugin().captures.capture([file], plugin().notes.captureTarget(view.editor, view.file), 'file');
     else {
       const data = new win.DataTransfer(); data.items.add(file);
       const event = method === 'drop' ? new win.DragEvent('drop', {dataTransfer: data, cancelable: true}) : new win.ClipboardEvent('paste', {clipboardData: data, cancelable: true});
@@ -133,10 +133,10 @@ module.exports = async (app, config) => {
   };
   try {
     await wait(plugin, 'Image Ledger loaded');
-    await plugin().ensureInitialized(); await plugin().store.refresh();
+    await plugin().library.ready(); await plugin().library.store.refresh();
     assert.equal(plugin().settings.storageLayout, 'flat', 'New vaults must default to flat image storage');
     if (config.phase === 'main') {
-      assert.equal(plugin().store.allRecords().length, 0, 'Smoke vault must be fresh');
+      assert.equal(plugin().library.store.allRecords().length, 0, 'Smoke vault must be fresh');
       await step('JPEG file import and EXIF', async () => {
         submit(await capture('sample-exif.jpg', source, 'file'), 'Synthetic JPEG.');
         await wait(() => synchronized('sample-exif.jpg', 'Synthetic JPEG.'), 'JPEG persistence');
@@ -149,7 +149,7 @@ module.exports = async (app, config) => {
         submit(await capture('sample-exif.jpg', other, 'file'), 'Synthetic JPEG.');
         await wait(() => record('sample-exif.jpg').sourceNotes.length === 2 && synchronized('sample-exif.jpg', 'Synthetic JPEG.'), 'duplicate persistence');
         assert.equal(record('sample-exif.jpg').id, jpegId);
-        assert.equal(plugin().store.allRecords().length, 1);
+        assert.equal(plugin().library.store.allRecords().length, 1);
         verifyRecord(record('sample-exif.jpg'));
       });
       await step('Actual Bases description editor and links', async () => {
@@ -198,7 +198,7 @@ module.exports = async (app, config) => {
       });
       await step('Paste handler staged with caption open', async () => {
         const input = await capture('sample.png', other, 'paste'); assert.ok(input.isConnected);
-        const pending = await wait(async () => (await plugin().store.pendingCaptures()).find(item => item.sourcePath === other), 'real paste staging');
+        const pending = await wait(async () => (await plugin().library.store.pendingCaptures()).find(item => item.sourcePath === other), 'real paste staging');
         assert.equal(pending.storageFolder, '', 'Dated notes must still use flat storage by default');
         assert.equal(hash(path.join(root, pending.dataPath)), fixtures['sample.png']);
         const token = randomUUID(); plugin().__imageLedgerSmokeToken = token;
@@ -210,17 +210,17 @@ module.exports = async (app, config) => {
       assert.equal(checkpoint.runId, config.runId);
       assert.notEqual(plugin().__imageLedgerSmokeToken, checkpoint.token, 'Plugin was not reloaded');
       await step('Recover real caption-open paste after app reload', async () => {
-        assert.ok((await plugin().store.pendingCaptures()).some(item => item.id === checkpoint.pending.id), 'Interrupted paste staging disappeared');
+        assert.ok((await plugin().library.store.pendingCaptures()).some(item => item.id === checkpoint.pending.id), 'Interrupted paste staging disappeared');
         assert.equal(app.commands.executeCommandById('image-ledger:recover-captures'), true);
         submit(await modal(), 'Recovered synthetic PNG.');
-        await wait(async () => (await plugin().store.pendingCaptures()).length === 0 && synchronized('sample.png', 'Recovered synthetic PNG.'), 'recovery completion');
+        await wait(async () => (await plugin().library.store.pendingCaptures()).length === 0 && synchronized('sample.png', 'Recovered synthetic PNG.'), 'recovery completion');
         const png = verifyRecord(record('sample.png'));
         assert.equal(png.id, checkpoint.pngId); assert.equal(png.sourceNotes.length, 2);
-        assert.equal(plugin().store.allRecords().length, 2);
+        assert.equal(plugin().library.store.allRecords().length, 2);
         assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/staging')), []);
       });
       await step('Final records and actual audit notice', async () => {
-        receipt.records = plugin().store.allRecords().map(verifyRecord);
+        receipt.records = plugin().library.store.allRecords().map(verifyRecord);
         assert.ok(receipt.records.every(record => record.captionStatus === 'confirmed'));
         assert.equal(app.commands.executeCommandById('image-ledger:audit-images'), true);
         receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit notice');

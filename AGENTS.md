@@ -2,23 +2,26 @@
 
 Use the Caveman and Ponytail skills. Keep changes small and reports concise.
 
-## Default verification
+## Documentation and source
 
-- Run `npm test` for unit/filesystem checks when code changes require them.
-- The default live smoke test is `npm run test:obsidian`. It builds the current plugin, creates a fresh synthetic vault, and exercises the loaded Obsidian app through CLI/API calls and real DOM handlers.
-- Read `TESTING.md` before changing the runner. Keep its 90-second deadline, bounded readiness waits, canonical vault-path checks, plugin/build/fixture validation, nonce checks, and JSON receipts.
-- Do not repeat successful checks without a new change, failure, or unresolved concern that justifies another run.
+- Write for the reader's next task. README owns installation, everyday use, and user-facing limits. CONTRIBUTING.md owns developer setup and the source map. TESTING.md owns test procedures. Avoid repeating them across files.
+- Document current behavior. Keep plans in Linear and dated evidence in `docs/smoke-tests/`; neither is a current test result.
+- Keep `src/main.ts` focused on registration, capture/recovery in `src/captures.ts`, image data in `src/images/`, and host integration in `src/obsidian/`. Each owner keeps its related state and behavior; avoid forwarding methods and layers that only shorten files.
+- Use readable blocks and one operation per statement. Do not pack callbacks, validation, or state changes into dense one-line expressions.
+- Keep descriptions, commands, and examples brief and concrete. Update the relevant guide when behavior changes.
+- Preserve unrelated working-tree changes.
+
+## Verification
+
+- Run `npm test` for code changes. Use `npm run test:obsidian` for live plugin/UI verification through CLI/API calls and programmatic DOM handlers.
+- Read TESTING.md before changing the runner. Preserve its 90-second deadline, bounded waits, canonical path checks, generated-vault marker, build/fixture/plugin validation, nonce checks, and JSON receipts.
+- All tests use fresh generated synthetic vaults. Never test or install test builds in `/Users/aegerita/Coding/Journal`, or copy personal notes, settings, or credentials into fixtures. Preserve the generated-vault-only trust step.
+- Do not repeat successful checks without a new change, failure, or unresolved concern.
 
 ## No computer use
 
-Do not use computer-use tools or native GUI automation for this project. This includes screenshot-driven control, coordinate clicks, simulated keyboard/mouse input, accessibility/AppleScript UI scripting, and Finder/clipboard gestures. Direct CLI/API calls and programmatic DOM handlers in the bounded smoke runner are allowed.
+Do not use computer-use tools or native GUI automation: screenshots, coordinate clicks, simulated keyboard/mouse input, accessibility/AppleScript UI scripting, or Finder/clipboard gestures. Direct CLI/API calls and programmatic DOM handlers are allowed.
 
-If the CLI/API is unavailable or the runner fails, diagnose or repair the bounded API runner, or report `FAIL` / `NOT RUN` with the actual blocker and retained receipt. Never fall back to computer use, propose a native UI fallback, or extend the test budget to retry GUI actions.
+If the API is unavailable or the runner fails, diagnose or repair the bounded runner, or report `FAIL` / `NOT RUN` with the blocker and retained receipt. Never fall back to native UI automation or extend the deadline for it.
 
-Generated paste/drop events do not prove native OS clipboard conversion or Finder gesture behavior. Report those boundaries as unverified; do not use them as a reason to start computer use. Extend API or unit coverage where possible.
-
-## Isolation and project context
-
-All tests must use fresh generated synthetic vaults. Never test or install test builds in `/Users/aegerita/Coding/Journal`, or copy its personal notes, settings, or credentials into a test vault. Keep the runner's verified generated-vault-only trust step.
-
-Linear is the planning authority. Preserve unrelated working-tree changes. Dated smoke reports and archived architecture documents are historical evidence, not current procedures; this file and `TESTING.md` define the current testing policy.
+Generated paste/drop events do not prove native OS clipboard conversion or Finder gestures. Leave those boundaries unverified; extend API or unit coverage where possible.

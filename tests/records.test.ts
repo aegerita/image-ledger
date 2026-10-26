@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BASE_CONTENT, markdownEmbed, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/records';
-import type { ImageRecord } from '../src/types';
+import { BASE_CONTENT, markdownEmbed, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/images/records';
+import type { ImageRecord } from '../src/images/model';
 
 const id = '91d1699d-f733-45a9-905c-f630cc2e5426';
 function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
@@ -70,6 +70,14 @@ test('Markdown embeds escape alt brackets and backslashes, fold newlines, and en
   const record = fixture({ imagePath: `2026 year/images/${id}.jpg`, description: 'The [red] \\ boat\n at sunset' });
   assert.equal(markdownEmbed(record, '2025/December trip/31.md'), `![The \\[red\\] \\\\ boat at sunset](../../2026%20year/images/${id}.jpg)`);
   assert.equal(markdownEmbed(fixture(), '2026/October/17.md'), `![Canoe beside the dock at sunset.](../images/${id}.jpg)`);
+});
+
+test('Markdown embeds encode parentheses inside image folder names', () => {
+  const record = fixture({imagePath: `Photos (draft)/Loose )/images/${id}.jpg`});
+  assert.equal(
+    markdownEmbed(record, 'Projects/Research.md'),
+    `![Canoe beside the dock at sunset.](../Photos%20%28draft%29/Loose%20%29/images/${id}.jpg)`,
+  );
 });
 
 test('record supports paths across years and spaces', () => {
@@ -151,4 +159,24 @@ test('normal Obsidian source note link updates override the portable snapshot', 
   const note = serializeRecord(fixture()).replace('  - "[[2026/October/17]]"', '  - "[[2026/October/renamed]]"');
   assert.deepEqual(parseRecord(note)?.sourceNotes, ['2026/October/renamed.md']);
   assert.deepEqual(parseRecordSnapshot(note)?.sourceNotes, ['2026/October/17.md']);
+});
+
+test('source note lists preserve references with unindented items, comments, and blank lines', () => {
+  const note = serializeRecord(fixture());
+  for (const list of [
+    '- "[[2026/October/17]]"',
+    '# Source note\n- "[[2026/October/17]]"',
+    '\n  # Source note\n\n  - "[[2026/October/17]]"',
+  ]) {
+    const edited = note.replace('  - "[[2026/October/17]]"', list);
+    assert.deepEqual(parseRecord(edited)?.sourceNotes, ['2026/October/17.md']);
+  }
+});
+
+test('unsupported nonempty source note lists are rejected instead of erasing references', () => {
+  const note = serializeRecord(fixture());
+  for (const list of ['  unexpected text', 'unexpected text', '-', '  -', '  nested:\n    bad: value']) {
+    const edited = note.replace('  - "[[2026/October/17]]"', list);
+    assert.equal(parseRecord(edited), null);
+  }
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { detectImageFormat, extractMetadata, newImageId, sha256 } from '../src/media';
+import { detectImageFormat, extractMetadata, sha256 } from '../src/images/media';
 
 import { JPEG, PNG, jpegWithExif, pngWithExif } from './fixtures';
 
@@ -94,9 +94,6 @@ test('rejects truncated and malformed JPEG/PNG containers before ingestion', () 
   }
 });
 
-test('hashes exact file bytes and generates collision-resistant UUIDv4 image names', () => {
+test('hashes exact file bytes', () => {
   assert.equal(sha256(Buffer.from('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
-  const ids = Array.from({ length: 100 }, newImageId);
-  ids.forEach(id => assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/));
-  assert.equal(new Set(ids).size, ids.length);
 });

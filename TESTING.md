@@ -40,7 +40,7 @@ All tests use fresh synthetic vaults. Never test or install a test build in the 
 
 ## Report results
 
-Keep the generated vault and `.image-ledger-smoke/` JSON receipts, including failures. Report:
+Keep the generated vault and its `.image-ledger-smoke/` JSON receipts locally, including failures. Store dated summaries in ignored `docs/smoke-tests/` or attach them to Linear. Do not commit reports or raw receipts. Report:
 
 - Date, Obsidian version, vault path, build identity, duration, and exit status.
 - Which unit and host checks ran, with `PASS`, `FAIL`, or `NOT RUN` outcomes.
@@ -51,4 +51,4 @@ A timeout, missing receipt, or historical result is not a current pass. Do not r
 
 Only current record, settings, and staging formats are supported. Malformed receipts must retain their payloads; recovery never infers a missing storage destination.
 
-[Dated smoke reports](docs/smoke-tests/) are historical evidence, not current procedures. Follow this guide and [AGENTS.md](AGENTS.md).
+Follow this guide and [AGENTS.md](AGENTS.md) for current procedures.

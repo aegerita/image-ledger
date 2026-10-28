@@ -4,17 +4,20 @@ import { detectImageFormat, extractMetadata, sha256 } from './media';
 import { BASE_CONTENT, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from './records';
 import type { ImageRecord, MediaInput } from './model';
 import type { StorageLayout } from '../settings';
+import { OPERATION_DIR, operationPath, parseOperation, type ProjectionJournal, type RecordIntent, type RecordOperation } from './operations';
 
 export interface VaultIO {
   exists(path: string): Promise<boolean>;
   read(path: string): Promise<string>;
   write(path: string, text: string): Promise<void>;
+  process(path: string, update: (content: string) => string): Promise<void>;
   readBinary(path: string): Promise<Uint8Array>;
   writeBinary(path: string, bytes: Uint8Array, mtime?: number): Promise<void>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   recordPaths(): Promise<string[]>;
   pendingPaths(): Promise<string[]>;
+  operationPaths(): Promise<string[]>;
 }
 
 export interface PendingCapture {
@@ -34,13 +37,40 @@ export interface PendingCapture {
 export interface PreparedCapture {
   pending: PendingCapture;
   record: ImageRecord;
-  previous: ImageRecord;
   duplicate: boolean;
 }
 
-type ReconcileRecord = (record: ImageRecord, content: string) => Promise<void>;
+type SynchronizeRecord = (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => Promise<void>;
 
 const STATE_DIR = '.image-ledger/staging';
+
+function applyIntent(current: ImageRecord, intent: RecordIntent): ImageRecord {
+  if (intent.kind === 'description') {
+    const next: ImageRecord = intent.description === null ? current
+      : {...current, description: normalizeDescription(intent.description), captionStatus: 'confirmed'};
+    if (!intent.source) return next;
+    const source = intent.source;
+    const sourceNotes = [...next.sourceNotes, source.from].map(value => value === source.from ? source.to : value);
+    return {...next, sourceNotes: [...new Set(sourceNotes)]};
+  }
+  if (intent.kind === 'rename') {
+    const rewrite = (value: string) => rewritePath(value, intent.from, intent.to);
+    return {
+      ...current,
+      imagePath: rewrite(current.imagePath),
+      recordPath: rewrite(current.recordPath),
+      sidecarPath: rewrite(current.sidecarPath),
+      sourceNotes: current.sourceNotes.map(rewrite),
+    };
+  }
+  return current;
+}
+
+function rewritePath(value: string, from: string, to: string): string {
+  if (value === from) return to;
+  if (value.startsWith(from + '/')) return to + value.slice(from.length);
+  return value;
+}
 
 export function storageFolder(sourcePath: string, importedAt: Date, layout: StorageLayout): string {
   if (layout === 'flat') return '';
@@ -66,22 +96,41 @@ export class MediaStore {
     private settings: {storageLayout: StorageLayout} = {storageLayout: 'flat'},
   ) {}
 
-  async initialize(): Promise<void> {
+  async initialize(synchronize?: SynchronizeRecord): Promise<void> {
     await this.io.mkdir(STATE_DIR);
-    await this.refresh();
+    await this.io.mkdir(OPERATION_DIR);
+    await this.refresh(synchronize);
     if (!await this.io.exists('image-library.base')) {
       await this.io.write('image-library.base', BASE_CONTENT);
     }
   }
 
-  async refresh(reconcile?: ReconcileRecord): Promise<void> {
+  refresh(synchronize?: SynchronizeRecord): Promise<void> {
+    return this.exclusive(() => this.refreshRecords(synchronize));
+  }
+
+  private async refreshRecords(synchronize?: SynchronizeRecord): Promise<void> {
+    if (synchronize) {
+      for (const file of await this.io.operationPaths()) {
+        await this.resumeOperation(file, synchronize);
+      }
+    }
     const records = new Map<string, ImageRecord>();
     const hashes = new Map<string, ImageRecord>();
     for (const file of await this.io.recordPaths()) {
-      const content = await this.io.read(file);
-      const record = parseRecord(content);
+      let content = await this.io.read(file);
+      let record = parseRecord(content);
+      if (record && record.recordPath !== file && synchronize && !await this.io.exists(record.recordPath)) {
+        if (await this.findMovedRecord(record) === file) {
+          await this.mutate(file, record.id, {kind: 'reconcile'}, synchronize);
+          content = await this.io.read(file);
+          record = parseRecord(content);
+        }
+      }
       if (record && record.recordPath === file) {
-        await reconcile?.(record, content);
+        if (synchronize) {
+          record = await this.reconcileRecord(record, content, synchronize);
+        }
         records.set(record.id, record);
         hashes.set(record.sha256, record);
       }
@@ -128,12 +177,12 @@ export class MediaStore {
     return pending;
   }
 
-  prepare(pending: PendingCapture, reconcile?: ReconcileRecord): Promise<PreparedCapture> {
+  prepare(pending: PendingCapture, synchronize?: SynchronizeRecord): Promise<PreparedCapture> {
     return this.exclusive(async () => {
       const bytes = await this.io.readBinary(pending.dataPath);
       const hash = sha256(bytes);
       // Re-read records so edits made through Bases remain authoritative.
-      await this.refresh(reconcile);
+      await this.refreshRecords(synchronize);
       const known = this.byHash.get(hash);
 
       if (known) {
@@ -147,7 +196,6 @@ export class MediaStore {
         }
         return {
           pending,
-          previous: known,
           record: {
             ...known,
             sourceNotes: [...new Set([...known.sourceNotes, pending.sourcePath])],
@@ -187,39 +235,199 @@ export class MediaStore {
         throw new Error('Saved image hash verification failed. The capture is still staged for recovery.');
       }
       await this.persist(record);
-      return {pending, record, previous: record, duplicate: false};
+      return {pending, record, duplicate: false};
     });
   }
 
-  async describe(prepared: PreparedCapture, description: string | null, sourcePath = prepared.pending.sourcePath): Promise<ImageRecord> {
-    const content = await this.io.read(prepared.record.recordPath);
-    const current = parseRecord(content);
-    if (!current || current.id !== prepared.record.id || current.recordPath !== prepared.record.recordPath) {
-      throw new Error('The image record changed or cannot be read. The capture remains staged for recovery.');
-    }
+  describe(
+    prepared: PreparedCapture,
+    description: string | null,
+    sourcePath = prepared.pending.sourcePath,
+    synchronize?: SynchronizeRecord,
+  ): Promise<ImageRecord> {
     const originalSource = prepared.pending.sourcePath;
-    const sourceNotes = [...new Set([...current.sourceNotes, originalSource])]
-      .map(value => value === originalSource ? sourcePath : value);
-    if (sourcePath !== originalSource) await this.retarget(prepared.pending, sourcePath);
-    // The snapshot retains the label already written into notes when Bases edits only frontmatter.
-    prepared.previous = parseRecordSnapshot(content) ?? current;
-    const record: ImageRecord = {
-      ...current,
-      sourceNotes: [...new Set(sourceNotes)],
-      description: description === null ? current.description : normalizeDescription(description),
-      captionStatus: description === null ? current.captionStatus : 'confirmed',
-    };
-    await this.persist(record);
-    prepared.record = record;
-    return record;
+    return this.exclusive(async () => {
+      const recordPath = this.records.get(prepared.record.id)?.recordPath ?? prepared.record.recordPath;
+      if (sourcePath !== originalSource) await this.retarget(prepared.pending, sourcePath);
+      const record = await this.mutate(recordPath, prepared.record.id, {
+        kind: 'description', description, source: {from: originalSource, to: sourcePath},
+      }, synchronize);
+      prepared.record = record;
+      return record;
+    });
   }
 
-  async persist(record: ImageRecord): Promise<void> {
+  setDescription(record: ImageRecord, description: string, synchronize: SynchronizeRecord): Promise<ImageRecord> {
+    return this.exclusive(() => {
+      const recordPath = this.records.get(record.id)?.recordPath ?? record.recordPath;
+      return this.mutate(recordPath, record.id, {kind: 'description', description}, synchronize);
+    });
+  }
+
+  rename(previousPath: string, renamedPath: string, synchronize: SynchronizeRecord): Promise<void> {
+    const intent: RecordIntent = {kind: 'rename', from: previousPath, to: renamedPath};
+    return this.exclusive(async () => {
+      // Relocate every affected receipt before a projection failure can stop this rename.
+      for (const file of await this.io.operationPaths()) {
+        const operation = parseOperation(await this.io.read(file), file);
+        if (rewritePath(operation.recordPath, previousPath, renamedPath) !== operation.recordPath) {
+          await this.retargetOperation(operation);
+        }
+      }
+      for (const cached of this.records.values()) {
+        const recordPath = rewritePath(cached.recordPath, previousPath, renamedPath);
+        if (!await this.io.exists(recordPath)) continue;
+        const content = await this.io.read(recordPath);
+        const current = parseRecord(content);
+        if (!current || current.id !== cached.id) continue;
+        if (JSON.stringify(applyIntent(current, intent)) !== JSON.stringify(current)) {
+          await this.mutate(recordPath, current.id, intent, synchronize);
+        }
+      }
+    });
+  }
+
+  reconcile(recordPath: string, synchronize: SynchronizeRecord): Promise<void> {
+    return this.exclusive(async () => {
+      if (!await this.io.exists(recordPath)) return;
+      const content = await this.io.read(recordPath);
+      const current = parseRecord(content);
+      if (current && current.recordPath === recordPath) {
+        await this.reconcileRecord(current, content, synchronize);
+      }
+    });
+  }
+
+  private async reconcileRecord(record: ImageRecord, content: string, synchronize: SynchronizeRecord): Promise<ImageRecord> {
+    const pending = operationPath(record.id);
+    if (await this.io.exists(pending)) return this.resumeOperation(pending, synchronize);
+    const previous = parseRecordSnapshot(content)!;
+    if (previous.description === record.description && previous.captionStatus === record.captionStatus) return record;
+    return this.mutate(record.recordPath, record.id, {kind: 'reconcile'}, synchronize);
+  }
+
+  private async mutate(
+    recordPath: string,
+    id: string,
+    intent: RecordIntent,
+    synchronize?: SynchronizeRecord,
+  ): Promise<ImageRecord> {
+    if (intent.kind === 'description' && intent.description !== null) {
+      intent = {...intent, description: normalizeDescription(intent.description)};
+    }
+    const receipt = operationPath(id);
+    if (await this.io.exists(receipt)) {
+      recordPath = (await this.resumeOperation(receipt, synchronize)).recordPath;
+    }
+    const baseline = parseRecord(await this.io.read(recordPath));
+    if (!baseline || baseline.id !== id) {
+      throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
+    }
+    const operation: RecordOperation = {
+      version: 1, recordPath, baseline, intent, synchronize: !!synchronize, notes: {},
+    };
+    await this.checkpoint(operation);
+    return this.finishOperation(operation, synchronize);
+  }
+
+  private async resumeOperation(file: string, synchronize?: SynchronizeRecord): Promise<ImageRecord> {
+    const operation = parseOperation(await this.io.read(file), file);
+    await this.retargetOperation(operation);
+    return this.finishOperation(operation, synchronize);
+  }
+
+  private async retargetOperation(operation: RecordOperation): Promise<void> {
+    if (await this.io.exists(operation.recordPath)) return;
+    operation.recordPath = await this.findMovedRecord(operation.baseline);
+    await this.checkpoint(operation);
+  }
+
+  private async findMovedRecord(record: ImageRecord): Promise<string> {
+    const matches: string[] = [];
+    for (const file of await this.io.recordPaths()) {
+      if (path.posix.basename(file) !== `${record.id}.md`) continue;
+      const candidate = parseRecord(await this.io.read(file));
+      if (candidate?.id === record.id && candidate.sha256 === record.sha256) matches.push(file);
+    }
+    if (matches.length !== 1) {
+      throw new Error(matches.length
+        ? 'Multiple matching image records make recovery ambiguous. The unfinished save was retained.'
+        : 'The image record is missing. The unfinished save was retained.');
+    }
+    return matches[0];
+  }
+
+  private async checkpoint(operation: RecordOperation): Promise<void> {
+    const file = operationPath(operation.baseline.id);
+    const content = JSON.stringify(operation, null, 2);
+    parseOperation(content, file);
+    await this.io.mkdir(OPERATION_DIR);
+    await this.io.write(file, content);
+  }
+
+  private async finishOperation(operation: RecordOperation, synchronize?: SynchronizeRecord): Promise<ImageRecord> {
+    if (operation.synchronize && !synchronize) {
+      throw new Error('This image has an unfinished save. Recover its note updates before making another change.');
+    }
+    const journal: ProjectionJournal = {
+      notes: operation.notes,
+      checkpoint: () => this.checkpoint(operation),
+    };
+    for (;;) {
+      const content = await this.io.read(operation.recordPath);
+      const current = parseRecord(content);
+      if (!current || current.id !== operation.baseline.id || current.sha256 !== operation.baseline.sha256) {
+        throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
+      }
+      const snapshot = parseRecordSnapshot(content)!;
+      // The snapshot proves a prior commit even if receipt cleanup never completed.
+      if (operation.target && JSON.stringify(snapshot) === JSON.stringify(operation.target)) {
+        operation.intent = {kind: 'reconcile'};
+      } else if (operation.intent.kind === 'description'
+        && (current.description !== operation.baseline.description
+          || current.captionStatus !== operation.baseline.captionStatus)) {
+        operation.intent = {...operation.intent, description: null};
+      }
+      const next = {...applyIntent(current, operation.intent), recordPath: operation.recordPath};
+      if (next.id !== current.id) {
+        throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
+      }
+      operation.target = next;
+      await this.checkpoint(operation);
+      if (operation.synchronize && synchronize) {
+        for (const sourcePath of next.sourceNotes) {
+          await synchronize(snapshot, {...next, sourceNotes: [sourcePath]}, journal);
+        }
+      }
+      if (await this.persist(next, content)) {
+        await this.io.remove(operationPath(operation.baseline.id));
+        return next;
+      }
+      // Keep durable occurrence plans while rebasing the intent on newer record fields.
+    }
+  }
+
+  private async persist(record: ImageRecord, expectedContent?: string): Promise<boolean> {
+    if (expectedContent === undefined && await this.io.exists(record.recordPath)) {
+      throw new Error('Refusing to overwrite an existing image record. The capture remains staged for recovery.');
+    }
     await this.io.mkdir(path.posix.dirname(record.recordPath));
+    const content = serializeRecord(record);
     await this.io.write(record.sidecarPath, serializeSidecar(record));
-    await this.io.write(record.recordPath, serializeRecord(record));
+    if (expectedContent === undefined) {
+      await this.io.write(record.recordPath, content);
+    } else {
+      let saved = false;
+      await this.io.process(record.recordPath, current => {
+        if (current !== expectedContent) return current;
+        saved = true;
+        return content;
+      });
+      if (!saved) return false;
+    }
     this.records.set(record.id, record);
     this.byHash.set(record.sha256, record);
+    return true;
   }
 
   async complete(pending: PendingCapture): Promise<void> {

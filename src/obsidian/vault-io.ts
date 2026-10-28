@@ -58,6 +58,11 @@ export function createVaultIO(vault: Vault): VaultIO {
         await vault.create(p, text);
       }
     },
+    process: async (p, update) => {
+      const file = vault.getAbstractFileByPath(p);
+      if (!(file instanceof TFile)) throw new Error(`Image record no longer exists: ${p}`);
+      await vault.process(file, update);
+    },
     writeBinary: async (p, bytes, mtime) => {
       if (p.startsWith('.image-ledger/')) return durableHiddenWrite(p, bytes);
       if (await vault.adapter.exists(p)) {
@@ -89,8 +94,8 @@ export function createVaultIO(vault: Vault): VaultIO {
       }
     },
     remove: async p => {
-      if (!/^\.image-ledger\/staging\/[0-9a-f-]{36}\.(?:json|jpg|png)$/.test(p)) {
-        throw new Error('Only staging files may be removed automatically.');
+      if (!/^\.image-ledger\/(?:staging\/[0-9a-f-]{36}\.(?:json|jpg|png)|operations\/[0-9a-f-]{36}\.json)$/.test(p)) {
+        throw new Error('Only staging files and image save receipts may be removed automatically.');
       }
       try {
         await unlink(resolve(p));
@@ -103,6 +108,9 @@ export function createVaultIO(vault: Vault): VaultIO {
       .map(file => file.path),
     pendingPaths: async () => await vault.adapter.exists('.image-ledger/staging')
       ? (await vault.adapter.list('.image-ledger/staging')).files
+      : [],
+    operationPaths: async () => await vault.adapter.exists('.image-ledger/operations')
+      ? (await vault.adapter.list('.image-ledger/operations')).files.filter(file => file.endsWith('.json'))
       : [],
   };
 }

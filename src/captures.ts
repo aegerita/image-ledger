@@ -44,8 +44,8 @@ export class CaptureWorkflow {
         const source = this.notes.sourceNote(pending.sourcePath);
         const prepared = await this.library.prepare(pending);
         const description = await this.ui.describe(prepared.record);
-        const record = await this.store.describe(prepared, description, source?.path ?? pending.sourcePath);
-        if (prepared.previous.description !== record.description) await this.notes.updateEmbeds(prepared.previous, record);
+        const record = await this.store.describe(prepared, description, source?.path ?? pending.sourcePath,
+          (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
         await this.notes.recover(record, pending.sourcePath);
         await this.store.complete(pending);
         await this.library.openRecord(record);
@@ -91,9 +91,8 @@ export class CaptureWorkflow {
     if (pending.sourcePath !== target.path) await this.store.retarget(pending, target.path);
     const prepared = await this.library.prepare(pending);
     const description = await this.ui.describe(prepared.record);
-    const record = await this.store.describe(prepared, description, target.path);
-    if (prepared.previous.description !== record.description) await this.notes.updateEmbeds(prepared.previous, record);
-    return record;
+    return this.store.describe(prepared, description, target.path,
+      (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
   }
 }
 

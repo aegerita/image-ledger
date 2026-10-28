@@ -74,6 +74,8 @@ module.exports = async (app, config) => {
     assert.equal(fs.statSync(path.join(root, saved.imagePath)).size, saved.bytes);
     assert.ok(read(saved.recordPath).includes('description: ' + JSON.stringify(saved.description)));
     assert.ok(read(saved.recordPath).includes('caption_status: ' + JSON.stringify(saved.captionStatus)));
+    const sources = saved.sourceNotes.map(note => '  - ' + JSON.stringify('[[' + note.replace(/\.md$/, '') + ']]'));
+    assert.ok(read(saved.recordPath).includes('source_notes:\n' + sources.join('\n') + '\n'), 'Frontmatter source notes differ from the snapshot');
     assert.ok(read(saved.sidecarPath).includes(saved.description));
     assert.ok(read(saved.sidecarPath).includes('urn:uuid:' + saved.id));
     assert.equal(saved.schemaVersion, 2);
@@ -81,7 +83,7 @@ module.exports = async (app, config) => {
     assert.equal('noteDate' in saved, false, 'Image records must not invent a note date');
     assert.equal(path.posix.dirname(saved.imagePath), 'images', 'New vaults must use flat image storage');
     assert.equal(path.posix.dirname(saved.sidecarPath), 'images');
-    assert.equal(path.posix.dirname(saved.recordPath), 'image-records');
+    assert.equal(path.posix.dirname(saved.recordPath), config.phase === 'recovery' ? 'Archive/image-records' : 'image-records');
     for (const note of saved.sourceNotes) assert.equal(read(note).split(embed(saved, note)).length - 1, 1);
     return saved;
   };
@@ -131,6 +133,7 @@ module.exports = async (app, config) => {
     if (!item || snapshot(item.recordPath).description !== description || !read(item.sidecarPath).includes(description)) return false;
     return item.sourceNotes.every(note => read(note).includes(embed({...item, description}, note)));
   };
+  let processBeforeRename;
   try {
     await wait(plugin, 'Image Ledger loaded');
     await plugin().library.ready(); await plugin().library.store.refresh();
@@ -181,6 +184,121 @@ module.exports = async (app, config) => {
         }, 'Base source-note link');
         link.click(); await wait(() => app.workspace.getActiveFile()?.path === source, 'Base source-note target');
       });
+      await step('Description save rebases a concurrent source-note edit', async () => {
+        const jpeg = record('sample-exif.jpg');
+        const description = 'Conflict-safe synthetic JPEG.';
+        const sourceNotes = [...jpeg.sourceNotes].reverse();
+        await open(jpeg.recordPath);
+        const process = app.vault.process;
+        let injected = false;
+        app.vault.process = async function(file, update, ...args) {
+          guard();
+          if (file.path === jpeg.recordPath && !injected) {
+            injected = true;
+            await app.fileManager.processFrontMatter(file, properties => {
+              assert.ok(Array.isArray(properties.source_notes), 'Missing editable source references');
+              properties.source_notes.reverse();
+            });
+          }
+          return process.call(this, file, update, ...args);
+        };
+        try {
+          await plugin().library.editDescription(async () => description);
+          assert.equal(injected, true, 'Concurrent edit did not reach the record write boundary');
+          await wait(() => synchronized('sample-exif.jpg', description), 'conflicting description save');
+          const saved = verifyRecord(record('sample-exif.jpg'));
+          assert.equal(saved.description, description);
+          assert.deepEqual(saved.sourceNotes, sourceNotes, 'Concurrent source references were replaced');
+        } finally {
+          app.vault.process = process;
+        }
+      });
+      await step('Description save synchronizes a source note added during the save', async () => {
+        const jpeg = record('sample-exif.jpg');
+        const description = 'Added-reference synthetic JPEG.';
+        const added = 'Added-during-save.md';
+        const oldEmbed = embed(jpeg, added);
+        const customEmbed = embed({...jpeg, description: 'Custom added-note label'}, added);
+        const before = '# Synthetic added source\n\nBEFORE_ADDED_IMAGE\n\n' + oldEmbed + '\n\n' + customEmbed + '\n\nAFTER_ADDED_IMAGE\n';
+        await app.vault.create(added, before);
+        await open(jpeg.recordPath);
+        const process = app.vault.process;
+        let injected = false;
+        app.vault.process = async function(file, update, ...args) {
+          guard();
+          if (file.path === jpeg.recordPath && !injected) {
+            injected = true;
+            for (const note of jpeg.sourceNotes) {
+              assert.ok(read(note).includes(embed({...jpeg, description}, note)), 'Original source was not updated before the conflict');
+            }
+            assert.equal(read(added), before, 'Added source changed before it was referenced');
+            await app.fileManager.processFrontMatter(file, properties => {
+              assert.ok(Array.isArray(properties.source_notes), 'Missing editable source references');
+              properties.source_notes.push('[[' + added.replace(/\.md$/, '') + ']]');
+            });
+          }
+          return process.call(this, file, update, ...args);
+        };
+        try {
+          await plugin().library.editDescription(async () => description);
+          assert.equal(injected, true, 'Added source did not reach the record write boundary');
+          await wait(() => synchronized('sample-exif.jpg', description), 'added source caption synchronization');
+          const saved = verifyRecord(record('sample-exif.jpg'));
+          assert.equal(saved.description, description);
+          assert.deepEqual(saved.sourceNotes, [...jpeg.sourceNotes, added], 'Added source reference was lost');
+          assert.deepEqual(record('sample-exif.jpg'), saved, 'Cache differs from the committed record');
+          assert.equal(read(added), before.replace(oldEmbed, embed({...jpeg, description}, added)), 'Added source text or custom alt text changed');
+        } finally {
+          app.vault.process = process;
+        }
+        await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(jpeg.recordPath), properties => {
+          properties.source_notes = properties.source_notes.filter(link => link !== '[[' + added.replace(/\.md$/, '') + ']]');
+        });
+        await plugin().library.editDescription(async () => description);
+        assert.deepEqual(verifyRecord(record('sample-exif.jpg')).sourceNotes, jpeg.sourceNotes, 'Temporary source reference was not removed');
+      });
+      await step('Description retry preserves custom alt text matching the submitted caption', async () => {
+        const jpeg = record('sample-exif.jpg');
+        const submitted = 'Matching custom alt synthetic JPEG.';
+        const newer = 'Newer Bases synthetic JPEG.';
+        const before = read(source);
+        const oldEmbed = embed(jpeg, source);
+        const custom = '\n\nMATCHING_CUSTOM_ALT_START\n' + embed({...jpeg, description: submitted}, source) + '\nMATCHING_CUSTOM_ALT_END\n';
+        assert.equal(before.split(oldEmbed).length - 1, 1, 'Expected one generated embed before the race');
+        const view = await open(source);
+        view.editor.setValue(before + custom);
+        await view.save();
+        await open(jpeg.recordPath);
+        const process = app.vault.process;
+        let injected = false;
+        app.vault.process = async function(file, update, ...args) {
+          guard();
+          if (file.path === jpeg.recordPath && !injected) {
+            injected = true;
+            assert.equal(read(source), before.replace(oldEmbed, embed({...jpeg, description: submitted}, source)) + custom,
+              'Generated caption or matching custom alt changed before the conflict');
+            await app.fileManager.processFrontMatter(file, properties => {
+              properties.description = newer;
+            });
+          }
+          return process.call(this, file, update, ...args);
+        };
+        try {
+          await plugin().library.editDescription(async () => submitted);
+          assert.equal(injected, true, 'Concurrent Bases edit did not reach the record write boundary');
+          await wait(() => synchronized('sample-exif.jpg', newer), 'matching custom alt retry');
+          const saved = verifyRecord(record('sample-exif.jpg'));
+          assert.equal(saved.description, newer);
+          assert.deepEqual(record('sample-exif.jpg'), saved, 'Cache differs from the committed record');
+          assert.deepEqual(saved.sourceNotes, jpeg.sourceNotes, 'Source references changed during the retry');
+          assert.equal(read(source), before.replace(oldEmbed, embed({...jpeg, description: newer}, source)) + custom,
+            'Retry changed matching custom alt text or surrounding text');
+        } finally {
+          app.vault.process = process;
+        }
+        await app.vault.process(app.vault.getAbstractFileByPath(source), content => content.replace(custom, ''));
+        verifyRecord(record('sample-exif.jpg'));
+      });
       await step('Drop handler, note switch and Describe later', async () => {
         const input = await capture('sample.png', source, 'drop');
         const before = read(other); await open(other); submit(input, null);
@@ -196,19 +314,141 @@ module.exports = async (app, config) => {
         await wait(() => synchronized('sample.png', 'Synthetic PNG.'), 'caption command persistence');
         assert.equal(verifyRecord(record('sample.png')).captionStatus, 'confirmed');
       });
+      const operations = [];
+      await step('Prepare isolated sources for interrupted description saves', async () => {
+        for (const [fixture, count, description] of [
+          ['sample-exif.jpg', 2, 'Restarted partial-note JPEG.'],
+          ['sample.png', 1, 'Restarted record-write PNG.'],
+        ]) {
+          const original = record(fixture);
+          const notes = [];
+          for (let index = 0; index < count; index++) {
+            const note = `Interrupted-${original.format}-${index}.md`;
+            const before = `# Synthetic interrupted save\n\nBEFORE_${original.format}_${index}\n\n`
+              + embed(original, note) + '\n\n'
+              + embed({...original, description: `Custom ${original.format} caption ${index}`}, note)
+              + `\n\nAFTER_${original.format}_${index}\n`;
+            await app.vault.create(note, before);
+            notes.push({path: note, before, after: before.replace(embed(original, note), embed({...original, description}, note))});
+          }
+          await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(original.recordPath), properties => {
+            properties.source_notes = notes.map(note => '[[' + note.path.replace(/\.md$/, '') + ']]');
+          });
+          const sidecar = read(original.sidecarPath).replace(original.description, description);
+          operations.push({fixture, original, description, notes, sidecar, receipt: `.image-ledger/operations/${original.id}.json`});
+        }
+        await plugin().library.store.refresh();
+        await wait(() => plugin().library.recordTimers.size === 0, 'source-reference edit reconciliation');
+      });
+      let checkpoint;
       await step('Paste handler staged with caption open', async () => {
         const input = await capture('sample.png', other, 'paste'); assert.ok(input.isConnected);
         const pending = await wait(async () => (await plugin().library.store.pendingCaptures()).find(item => item.sourcePath === other), 'real paste staging');
         assert.equal(pending.storageFolder, '', 'Dated notes must still use flat storage by default');
         assert.equal(hash(path.join(root, pending.dataPath)), fixtures['sample.png']);
         const token = randomUUID(); plugin().__imageLedgerSmokeToken = token;
-        fs.writeFileSync(path.join(directory, 'checkpoint.json'), JSON.stringify({runId: config.runId, token, pending, pngId: record('sample.png').id}), {flag: 'wx'});
+        checkpoint = {runId: config.runId, token, pending, pngId: record('sample.png').id, operations};
+      });
+      await step('Retain partial-note and record-write failures for restart', async () => {
+        for (const operation of operations) {
+          const item = record(operation.fixture);
+          const failedPath = operation.notes.length > 1 ? operation.notes[1].path : item.recordPath;
+          assert.equal(app.workspace.getLeavesOfType('markdown').some(leaf => operation.notes.some(note => leaf.view.file?.path === note.path)), false, 'Interrupted sources must use saved-file writes');
+          const process = app.vault.process;
+          let injected = false;
+          app.vault.process = async function(file, update, ...args) {
+            guard();
+            if (file.path === failedPath) {
+              injected = true;
+              assert.equal(read(operation.notes[0].path), operation.notes[0].after, 'First note was not saved before the injected failure');
+              throw new Error('Synthetic interrupted description write');
+            }
+            return process.call(this, file, update, ...args);
+          };
+          try {
+            await assert.rejects(plugin().library.store.setDescription(item, operation.description, plugin().library.synchronize), /Synthetic interrupted description write/);
+          } finally {
+            app.vault.process = process;
+          }
+          assert.equal(injected, true, 'Description save missed the intended failure boundary');
+          assert.equal(snapshot(item.recordPath).description, operation.original.description, 'Failed save committed the record snapshot');
+          assert.ok(fs.existsSync(path.join(root, operation.receipt)), 'Failed save lost its durable operation receipt');
+          assert.doesNotThrow(() => JSON.parse(read(operation.receipt)), 'Operation receipt is not readable JSON');
+          for (const [index, note] of operation.notes.entries()) {
+            assert.equal(read(note.path), index === 0 ? note.after : note.before, 'Unexpected partial note state');
+          }
+        }
+        assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')).sort(), operations.map(operation => path.basename(operation.receipt)).sort(), 'Both failed operations must survive until reload');
+      });
+      await step('Rename record folder while description saves remain interrupted', async () => {
+        const failedPaths = new Set(operations.map(operation => operation.notes.length > 1
+          ? operation.notes[1].path
+          : 'Archive/' + operation.original.recordPath));
+        const process = app.vault.process;
+        processBeforeRename = process;
+        // Keep the synthetic failures active until the actual app reload discards this runtime.
+        app.vault.process = async function(file, update, ...args) {
+          if (failedPaths.has(file.path)) {
+            guard();
+            throw new Error('Synthetic interrupted description write');
+          }
+          return process.call(this, file, update, ...args);
+        };
+        await app.vault.createFolder('Archive');
+        const folder = app.vault.getAbstractFileByPath('image-records');
+        assert.ok(folder, 'Missing original record folder');
+        await app.vault.rename(folder, 'Archive/image-records');
+        // The open caption blocks the capture queue, so await its rename handler directly.
+        try {
+          await plugin().library.rename(folder, 'image-records');
+        } catch (error) {
+          assert.match(error.message, /Synthetic interrupted description write/);
+        }
+        assert.equal(fs.existsSync(path.join(root, 'image-records')), false, 'Rename left the old record folder');
+        for (const operation of operations) {
+          const moved = 'Archive/' + operation.original.recordPath;
+          assert.equal(snapshot(moved).id, operation.original.id, 'Renamed file lost its record identity');
+          assert.equal(snapshot(moved).description, operation.original.description, 'Rename completed an interrupted save before reload');
+          assert.equal(JSON.parse(read(operation.receipt)).recordPath, moved, 'Pending receipt still points at the old record path');
+          for (const [index, note] of operation.notes.entries()) {
+            assert.equal(read(note.path), index === 0 ? note.after : note.before, 'Rename changed the interrupted note state');
+          }
+        }
+        fs.writeFileSync(path.join(directory, 'checkpoint.json'), JSON.stringify(checkpoint), {flag: 'wx'});
       });
       receipt.status = 'AWAITING_RELOAD';
     } else {
       const checkpoint = JSON.parse(fs.readFileSync(path.join(directory, 'checkpoint.json'), 'utf8'));
       assert.equal(checkpoint.runId, config.runId);
       assert.notEqual(plugin().__imageLedgerSmokeToken, checkpoint.token, 'Plugin was not reloaded');
+      await step('Replay partial description saves after app reload', async () => {
+        assert.equal(fs.existsSync(path.join(root, 'image-records')), false, 'Recovery recreated the old record folder');
+        for (const operation of checkpoint.operations) {
+          const saved = verifyRecord(record(operation.fixture));
+          assert.equal(saved.recordPath, 'Archive/' + operation.original.recordPath, 'Recovery did not use the renamed record');
+          assert.equal(saved.description, operation.description, 'Restart did not finish the interrupted description');
+          assert.deepEqual(saved.sourceNotes, operation.notes.map(note => note.path));
+          assert.deepEqual(record(operation.fixture), saved, 'Recovered cache differs from the committed record');
+          assert.equal(read(saved.sidecarPath), operation.sidecar, 'Recovered XMP differs from the intended record');
+          for (const note of operation.notes) {
+            assert.equal(read(note.path), note.after, 'Restart changed custom captions or surrounding text');
+          }
+          assert.equal(fs.existsSync(path.join(root, operation.receipt)), false, 'Completed operation receipt remains');
+        }
+        assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')), [], 'Pending description operations remain');
+        for (const operation of checkpoint.operations) {
+          await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(record(operation.fixture).recordPath), properties => {
+            properties.description = operation.original.description;
+            properties.caption_status = operation.original.captionStatus;
+            properties.source_notes = operation.original.sourceNotes.map(note => '[[' + note.replace(/\.md$/, '') + ']]');
+          });
+        }
+        await plugin().library.reconcileAll();
+        for (const operation of checkpoint.operations) {
+          verifyRecord(record(operation.fixture));
+          for (const note of operation.notes) await app.vault.delete(app.vault.getAbstractFileByPath(note.path));
+        }
+      });
       await step('Recover real caption-open paste after app reload', async () => {
         assert.ok((await plugin().library.store.pendingCaptures()).some(item => item.id === checkpoint.pending.id), 'Interrupted paste staging disappeared');
         assert.equal(app.commands.executeCommandById('image-ledger:recover-captures'), true);
@@ -221,13 +461,18 @@ module.exports = async (app, config) => {
       });
       await step('Final records and actual audit notice', async () => {
         receipt.records = plugin().library.store.allRecords().map(verifyRecord);
+        assert.equal(fs.existsSync(path.join(root, 'image-records')), false, 'A later save recreated the old record folder');
         assert.ok(receipt.records.every(record => record.captionStatus === 'confirmed'));
         assert.equal(app.commands.executeCommandById('image-ledger:audit-images'), true);
         receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit notice');
       });
       receipt.status = 'PASS';
     }
-  } catch (error) {receipt.status = 'FAIL'; receipt.error = String(error.stack ?? error);}
+  } catch (error) {
+    if (processBeforeRename) app.vault.process = processBeforeRename;
+    receipt.status = 'FAIL';
+    receipt.error = String(error.stack ?? error);
+  }
   receipt.finishedAt = new Date().toISOString(); save();
   return receipt.status;
 };

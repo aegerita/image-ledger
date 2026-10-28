@@ -239,7 +239,7 @@ function wikiLink(vaultPath: string): string {
   return `[[${vaultPath}]]`;
 }
 
-function assertVaultPath(value: string): void {
+export function assertVaultPath(value: string): void {
   if (typeof value !== 'string' || !value
     || posix.isAbsolute(value)
     || /[\\\u0000-\u001f\[\]#|^]/.test(value)
@@ -277,7 +277,7 @@ function isMetadata(value: unknown): value is ImageMetadata {
     && (item.warning === undefined || typeof item.warning === 'string');
 }
 
-function isImageRecord(value: unknown): value is ImageRecord {
+export function isImageRecord(value: unknown): value is ImageRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   if (Object.keys(value).some(key => !RECORD_FIELDS.has(key))) return false;
   const item = value as Partial<ImageRecord>;

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { CaptureWorkflow, latestBatchRecords } from '../src/captures';
 import { MediaStore, type VaultIO } from '../src/images/store';
+import type { ProjectionJournal } from '../src/images/operations';
 import type { CaptureTarget } from '../src/obsidian/notes';
 import { PNG } from './fixtures';
 import type { ImageRecord } from '../src/images/model';
@@ -56,23 +57,30 @@ function fixture(describe: (record: ImageRecord) => Promise<string | null> = asy
       return value.slice();
     },
     write: async (path, value) => { text.set(path, value); },
+    process: async (path, update) => {
+      const value = text.get(path);
+      assert.notEqual(value, undefined, `Missing file: ${path}`);
+      text.set(path, update(value!));
+    },
     writeBinary: async (path, value) => { bytes.set(path, value.slice()); },
     mkdir: async path => { folders.add(path); },
     remove: async path => { text.delete(path); bytes.delete(path); },
     recordPaths: async () => [...text.keys()].filter(path => /(?:^|\/)image-records\/[^/]+\.md$/.test(path)),
     pendingPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => path.startsWith('.image-ledger/staging/')),
+    operationPaths: async () => [...text.keys()].filter(path => /^\.image-ledger\/operations\/[^/]+\.json$/.test(path)),
   };
   const store = new MediaStore(io, {storageLayout: 'note-year'});
   const errors: unknown[] = [];
   const notifications: string[] = [];
   const recovered: ImageRecord[] = [];
   const library = {
-    ready: () => store.initialize(),
-    prepare: (pending: Parameters<MediaStore['prepare']>[0]) => store.prepare(pending),
+    ready: () => store.initialize((previous, next, journal) => notes.updateEmbeds(previous, next, journal)),
+    prepare: (pending: Parameters<MediaStore['prepare']>[0]) =>
+      store.prepare(pending, (previous, next, journal) => notes.updateEmbeds(previous, next, journal)),
     openRecord: async () => {},
   };
   const notes = {
-    updateEmbeds: async () => {},
+    updateEmbeds: async (_previous: ImageRecord, _next: ImageRecord, _journal?: ProjectionJournal) => {},
     recover: async (record: ImageRecord) => { recovered.push(record); },
     sourceNote: () => undefined,
   };
@@ -138,6 +146,25 @@ test('failed note insertion retains staged bytes and recovery completes them aft
   assert.equal(f.recovered[0].description, 'Saved image');
   assert.deepEqual(await f.store.pendingCaptures(), []);
   assert.deepEqual(f.notifications, ['Interrupted images recovered.']);
+});
+
+test('failed caption projection retains staging and recovery retries before committing the record', async () => {
+  const f = fixture();
+  const failure = new Error('Existing image note cannot be saved');
+  f.notes.updateEmbeds = async () => { throw failure; };
+  f.workflow.capture([f.file()], f.target, 'file');
+  await f.drain();
+  assert.deepEqual(f.errors, [failure]);
+  assert.equal(f.target.records.length, 0);
+  assert.equal(f.store.allRecords()[0].description, 'Description pending');
+  assert.equal((await f.store.pendingCaptures()).length, 1);
+
+  f.notes.updateEmbeds = async () => {};
+  f.workflow.recover();
+  await f.drain();
+
+  assert.equal(f.recovered[0].description, 'Saved image');
+  assert.deepEqual(await f.store.pendingCaptures(), []);
 });
 
 test('a note renamed during its caption keeps the staged storage folder and updates its reference', async () => {

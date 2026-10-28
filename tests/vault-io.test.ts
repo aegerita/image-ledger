@@ -172,7 +172,41 @@ test('hidden staging writes and removal guards retain their current behavior', a
   assert.deepEqual(new Uint8Array(await readFile(path.join(f.root, staged))), payload);
   assert.equal(f.created.length, 0);
   await assert.rejects(f.io.writeBinary('.image-ledger/../../outside.png', payload), /Invalid vault media path/);
-  await assert.rejects(f.io.remove(destination), /Only staging files may be removed automatically/);
+  await assert.rejects(f.io.remove(destination), /Only staging files and image save receipts may be removed automatically/);
   await f.io.remove(staged);
   await assert.rejects(readFile(path.join(f.root, staged)), {code: 'ENOENT'});
+});
+
+test('save receipts use atomic hidden writes and narrowly scoped cleanup', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const receipt = '.image-ledger/operations/00000000-0000-4000-8000-000000000000.json';
+  await f.io.write(receipt, '{"before":"A"}');
+  await f.io.write(receipt, '{"before":"B"}');
+  assert.equal(await readFile(path.join(f.root, receipt), 'utf8'), '{"before":"B"}');
+  await assert.rejects(f.io.remove(receipt.replace('.json', '.png')), /Only staging files and image save receipts/);
+  await f.io.remove(receipt);
+  await f.io.remove(receipt);
+  await assert.rejects(readFile(path.join(f.root, receipt)), {code: 'ENOENT'});
+});
+
+test('record processing uses the host atomic callback and refuses missing records', async () => {
+  const file = Object.assign(new TFile(), {path: 'image-records/test.md'});
+  let content = 'Newer saved content';
+  const adapter = new FileSystemAdapter();
+  adapter.getBasePath = () => '/synthetic-vault';
+  const vault = {
+    adapter,
+    getAbstractFileByPath: (relative: string) => relative === file.path ? file : null,
+    process: async (target: HostFile, update: (value: string) => string) => {
+      assert.equal(target, file);
+      content = update(content);
+    },
+  } as unknown as Vault;
+  const io = createVaultIO(vault);
+
+  await io.process(file.path, current => `${current} plus update`);
+  assert.equal(content, 'Newer saved content plus update');
+  await assert.rejects(io.process('image-records/missing.md', () => 'Replacement'), /no longer exists/);
+  assert.equal(content, 'Newer saved content plus update');
 });

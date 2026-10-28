@@ -6,7 +6,7 @@
 npm test
 ```
 
-This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, descriptions, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. It does not exercise the loaded Obsidian app.
+This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, description conflicts, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. Partial-save tests rebuild runtime objects from persisted data after note, sidecar, record, and receipt-cleanup failures, then recover twice. It does not exercise the loaded Obsidian app.
 
 GitHub Actions runs this command with Node.js 22 on Ubuntu for every push and pull request. The `Build and test` job checks the build and unit/filesystem tests. Obsidian host checks remain local because they require a running app and its enabled CLI.
 
@@ -20,7 +20,7 @@ Requires macOS, a running Obsidian app at `/Applications/Obsidian.app`, an initi
 
 The runner checks the exact canonical vault path, generated-vault marker, fixture hashes, plugin allowlist, and current build hashes before enabling community plugins in that vault. Every host call checks the target path again. Keep these guards, nonce checks, bounded readiness waits, and the **90-second deadline**, including the build.
 
-Checks cover description dialogs, Bases edits and links, generated paste/drop events, duplicate reuse, note switching, Describe later, description editing, and recovery after an app reload. File assertions check records, payload hashes, metadata, XMP, embeds, staging, and final audit counts.
+Checks cover description dialogs, Bases edits and links, description saves racing reordered or newly added source references, matching custom alt text during a concurrent caption edit, generated paste/drop events, duplicate reuse, note switching, Describe later, description editing, and recovery after an app reload. Before that reload, the runner interrupts one save after its first note and another after its notes but before its record write, then renames the record folder while both saves remain interrupted. Recovery must use the moved records without recreating the old folder. File assertions check records, payload hashes, metadata, XMP, embeds, staging, save-receipt cleanup, and final audit counts.
 
 Computer-use tools and native GUI automation are prohibited, including screenshots, coordinate clicks, simulated keyboard/mouse input, accessibility/AppleScript UI scripting, and Finder/clipboard gestures. Direct CLI/API calls and programmatic DOM handlers are allowed. If the runner fails, diagnose or repair it, or report `FAIL` / `NOT RUN` with the actual blocker and retained receipt. Never use a native UI fallback or extend the deadline to try one.
 

@@ -1,13 +1,14 @@
-import { Notice, TFile, type App } from 'obsidian';
+import { Notice, type App } from 'obsidian';
 import type { ImageRecord } from '../images/model';
-import { parseRecord, parseRecordSnapshot } from '../images/records';
 import { MediaStore, type PendingCapture, type PreparedCapture } from '../images/store';
+import type { ProjectionJournal } from '../images/operations';
 import { NoteImages } from './notes';
 import { RecordPicker } from './ui';
 
 export class RecordLibrary {
   private initialized?: Promise<void>;
   private recordTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private synchronize = (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => this.notes.updateEmbeds(previous, next, journal);
 
   constructor(
     private app: App,
@@ -17,7 +18,7 @@ export class RecordLibrary {
   ) {}
 
   ready(): Promise<void> {
-    return this.initialized ??= this.store.initialize().catch(error => {
+    return this.initialized ??= this.store.initialize(this.synchronize).catch(error => {
       this.initialized = undefined;
       throw error;
     });
@@ -38,45 +39,27 @@ export class RecordLibrary {
     if (existing) clearTimeout(existing);
     this.recordTimers.set(recordPath, setTimeout(() => {
       this.recordTimers.delete(recordPath);
-      void this.reconcileRecord(file.path).catch(this.report);
+      void this.store.reconcile(file.path, this.synchronize).catch(this.report);
     }, 500));
   }
 
-  async reconcileAll(): Promise<void> {
-    await this.store.refresh((record, content) => this.reconcile(record, content));
+  reconcileAll(): Promise<void> {
+    return this.store.refresh(this.synchronize);
   }
 
   prepare(pending: PendingCapture): Promise<PreparedCapture> {
-    return this.store.prepare(pending, (record, content) => this.reconcile(record, content));
+    return this.store.prepare(pending, this.synchronize);
   }
 
-  async rename(file: {path: string}, previousPath: string): Promise<void> {
-    const rewrite = (value: string) => {
-      if (value === previousPath) return file.path;
-      if (value.startsWith(previousPath + '/')) return file.path + value.slice(previousPath.length);
-      return value;
-    };
-    for (const record of this.store.allRecords()) {
-      const next = {
-        ...record,
-        imagePath: rewrite(record.imagePath),
-        recordPath: rewrite(record.recordPath),
-        sidecarPath: rewrite(record.sidecarPath),
-        sourceNotes: record.sourceNotes.map(rewrite),
-      };
-      if (JSON.stringify(next) !== JSON.stringify(record)) await this.store.persist(next);
-    }
+  rename(file: {path: string}, previousPath: string): Promise<void> {
+    return this.store.rename(previousPath, file.path, this.synchronize);
   }
 
   async editDescription(describe: (record: ImageRecord) => Promise<string | null>): Promise<void> {
     await this.selectRecord(async record => {
       const description = await describe(record);
       if (description === null) return;
-      await this.reconcileAll();
-      const current = this.store.allRecords().find(item => item.id === record.id);
-      if (!current) throw new Error('The image record was removed or cannot be read. Its description was not changed.');
-      const next: ImageRecord = {...current, description, captionStatus: 'confirmed'};
-      await this.updateDescription(current, next);
+      await this.store.setDescription(record, description, this.synchronize);
       new Notice('Image description updated.');
     });
   }
@@ -84,7 +67,7 @@ export class RecordLibrary {
   async audit(): Promise<void> {
     try {
       await this.ready();
-      await this.store.refresh();
+      await this.store.refresh(this.synchronize);
       const records = this.store.allRecords();
       let missing = 0;
       for (const record of records) {
@@ -101,7 +84,7 @@ export class RecordLibrary {
   private async selectRecord(action: (record: ImageRecord) => Promise<void>): Promise<void> {
     try {
       await this.ready();
-      await this.store.refresh();
+      await this.store.refresh(this.synchronize);
       const active = this.app.workspace.getActiveFile();
       if (active) {
         const record = this.store.allRecords().find(record => record.recordPath === active.path || record.imagePath === active.path);
@@ -115,27 +98,6 @@ export class RecordLibrary {
       new RecordPicker(this.app, records, record => void action(record).catch(this.report)).open();
     } catch (error) {
       this.report(error);
-    }
-  }
-
-  private async updateDescription(previous: ImageRecord, next: ImageRecord): Promise<void> {
-    await this.notes.updateEmbeds(previous, next);
-    await this.store.persist(next);
-  }
-
-  private async reconcileRecord(recordPath: string): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(recordPath);
-    if (!(file instanceof TFile)) return;
-    const content = await this.app.vault.read(file);
-    const next = parseRecord(content);
-    if (!next) return;
-    await this.reconcile(next, content);
-  }
-
-  private async reconcile(next: ImageRecord, content: string): Promise<void> {
-    const previous = parseRecordSnapshot(content) ?? this.store.allRecords().find(record => record.id === next.id);
-    if (previous && (previous.description !== next.description || previous.captionStatus !== next.captionStatus)) {
-      await this.updateDescription(previous, next);
     }
   }
 }

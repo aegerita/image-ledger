@@ -25,6 +25,8 @@ To update, replace those three files with a new build and reload the plugin.
 
 Choose **Describe later** to keep the image without finishing its description. Run **Image Ledger: Edit image description** later, or edit `description` in the library. This updates generated image descriptions in your notes; custom alt text stays as you wrote it.
 
+Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace.
+
 ## Where your images go
 
 By default, each image gets a unique filename in `images/`, a metadata note in `image-records/`, and a matching `.xmp` metadata file beside the image. Open `image-library.base` to browse the library in Obsidian.

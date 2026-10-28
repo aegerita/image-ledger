@@ -150,6 +150,7 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     const text = await readFile(path.join(vault, file), 'utf8');
     const record = parseRecord(text);
     assert.ok(record, `Invalid record: ${file}`);
+    assert.equal(path.posix.dirname(file), 'Archive/image-records', 'Record did not remain in the renamed folder');
     assert.deepEqual(record, parseRecordSnapshot(text), 'Frontmatter and snapshot differ');
     assert.equal(record.recordPath, file);
     assert.equal(record.captionStatus, 'confirmed', 'Unfinished description');
@@ -170,6 +171,7 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
   }
   assert.deepEqual(recordHashes, fixtureHashes, 'Managed images must match both fixtures');
   assert.deepEqual(await readdir(path.join(vault, '.image-ledger/staging')), [], 'Staging is not empty');
+  assert.deepEqual(await readdir(path.join(vault, '.image-ledger/operations')), [], 'Description operations are not empty');
   assert.deepEqual(Object.keys(artifacts).sort(), [...artifactNames].sort());
   for (const file of artifactNames) {
     assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', file))), artifacts[file], 'Installed build changed');

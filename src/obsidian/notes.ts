@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { addAnchor, insertionAnchors, removeAnchor } from './anchors';
 import { markdownEmbed } from '../images/records';
 import type { ImageRecord } from '../images/model';
+import type { NoteProjection, ProjectionJournal } from '../images/operations';
 import type { Settings } from '../settings';
 
 export interface CaptureTarget {
@@ -72,31 +73,95 @@ export class NoteImages {
     };
   }
 
-  async updateEmbeds(previous: ImageRecord, next: ImageRecord): Promise<void> {
+  async updateEmbeds(previous: ImageRecord, next: ImageRecord, journal?: ProjectionJournal): Promise<void> {
+    const plans: Record<string, NoteProjection> = journal?.notes ?? Object.create(null);
     for (const sourcePath of next.sourceNotes) {
-      const file = this.app.vault.getAbstractFileByPath(sourcePath);
-      if (!(file instanceof TFile)) continue;
-      const before = markdownEmbed(previous, sourcePath);
-      const after = markdownEmbed(next, sourcePath);
-      if (before === after) continue;
-      const prefix = before.slice(0, before.lastIndexOf('](') + 2);
-      const pattern = new RegExp(escapePattern(prefix) + imageTargetPattern(before) + '\\)', 'g');
-      const views = this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view as MarkdownView);
-      const editor = views.find(view => view.file?.path === sourcePath)?.editor;
-      if (editor) {
-        const content = editor.getValue();
-        const changes = [...content.matchAll(pattern)].map(match => ({
-          from: editor.offsetToPos(match.index!),
-          to: editor.offsetToPos(match.index! + match[0].length),
-          text: after,
-        }));
-        if (changes.length) {
-          editor.transaction({changes});
-          await this.saveOpenFile(sourcePath);
-        }
-      } else {
-        await this.app.vault.process(file, content => content.replace(pattern, () => after));
+      const existing = Object.hasOwn(plans, sourcePath) ? plans[sourcePath] : undefined;
+      const file = this.sourceNote(sourcePath);
+      if (!file) {
+        if (existing) throw noteProjectionConflict(sourcePath);
+        continue;
       }
+
+      let before: string;
+      let beforeRanges: NoteProjection['beforeRanges'];
+      if (existing) {
+        await this.applyNoteProjection(sourcePath, existing);
+        before = existing.after;
+        beforeRanges = existing.ranges;
+      } else {
+        // Flush user edits before recording a durable projection baseline.
+        await this.saveOpenFile(sourcePath);
+        before = await this.app.vault.read(file);
+        const view = this.noteView(sourcePath);
+        if (this.sourceNote(sourcePath) !== file || (view && view.editor.getValue() !== before)) {
+          throw noteProjectionConflict(sourcePath);
+        }
+        const embed = markdownEmbed(previous, sourcePath);
+        const prefix = embed.slice(0, embed.lastIndexOf('](') + 2);
+        const pattern = new RegExp(escapePattern(prefix) + imageTargetPattern(embed) + '\\)', 'g');
+        beforeRanges = [...before.matchAll(pattern)].map(match => ({
+          from: match.index!, to: match.index! + match[0].length,
+        }));
+      }
+
+      const embed = markdownEmbed(next, sourcePath);
+      const plan: NoteProjection = {before, after: '', beforeRanges, ranges: []};
+      let cursor = 0;
+      for (const range of beforeRanges) {
+        plan.after += before.slice(cursor, range.from);
+        const from = plan.after.length;
+        plan.after += embed;
+        plan.ranges.push({from, to: plan.after.length});
+        cursor = range.to;
+      }
+      plan.after += before.slice(cursor);
+      Object.defineProperty(plans, sourcePath, {value: plan, configurable: true, enumerable: true, writable: true});
+      await journal?.checkpoint();
+      await this.applyNoteProjection(sourcePath, plan);
+    }
+  }
+
+  private noteView(sourcePath: string): MarkdownView | undefined {
+    const views = this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view as MarkdownView);
+    return views.find(view => view.file?.path === sourcePath);
+  }
+
+  private async applyNoteProjection(sourcePath: string, plan: NoteProjection): Promise<void> {
+    const file = this.sourceNote(sourcePath);
+    if (!file) throw noteProjectionConflict(sourcePath);
+    const view = this.noteView(sourcePath);
+    if (!view) {
+      await this.app.vault.process(file, content => {
+        if (content !== plan.before && content !== plan.after) throw noteProjectionConflict(sourcePath);
+        return plan.after;
+      });
+      return;
+    }
+
+    const saved = await this.app.vault.read(file);
+    const content = view.editor.getValue();
+    if (this.sourceNote(sourcePath) !== file || this.noteView(sourcePath) !== view
+      || (saved !== plan.before && saved !== plan.after)
+      || (content !== plan.before && content !== plan.after)) throw noteProjectionConflict(sourcePath);
+    if (content === plan.before) {
+      const changes = plan.beforeRanges.flatMap((range, index) => {
+        const after = plan.ranges[index];
+        const text = plan.after.slice(after.from, after.to);
+        if (plan.before.slice(range.from, range.to) === text) return [];
+        return [{
+          from: view.editor.offsetToPos(range.from),
+          to: view.editor.offsetToPos(range.to),
+          text,
+        }];
+      });
+      if (changes.length) view.editor.transaction({changes});
+    }
+    if (view.editor.getValue() !== plan.after) throw noteProjectionConflict(sourcePath);
+    // An interrupted save can leave the editor updated while disk still has the old text.
+    await view.save();
+    if (await this.app.vault.read(file) !== plan.after || view.editor.getValue() !== plan.after) {
+      throw noteProjectionConflict(sourcePath);
     }
   }
 
@@ -159,6 +224,10 @@ export class NoteImages {
       if (view.file?.path === sourcePath) await view.save();
     }
   }
+}
+
+function noteProjectionConflict(sourcePath: string): Error {
+  return new Error(`A source note changed during the description save or no longer exists: ${sourcePath}. Its text and the unfinished save receipt were preserved.`);
 }
 
 function escapePattern(value: string): string {

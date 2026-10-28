@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { MediaStore, storageFolder, type VaultIO } from '../src/images/store';
 import { sha256 } from '../src/images/media';
-import { parseRecord } from '../src/images/records';
+import { parseRecord, serializeRecord } from '../src/images/records';
 import type { StorageLayout } from '../src/settings';
 
 // A complete 1×1 PNG, kept as fixed bytes so preservation assertions are independent of the implementation.
@@ -25,11 +25,16 @@ async function fixture(storageLayout: StorageLayout = 'note-year') {
     read: relative => readFile(path.join(root, relative), 'utf8'),
     readBinary: async relative => new Uint8Array(await readFile(path.join(root, relative))),
     write: async (relative, text) => {await writeFile(path.join(root, relative), text);},
+    process: async (relative, update) => {
+      const file = path.join(root, relative);
+      await writeFile(file, update(await readFile(file, 'utf8')));
+    },
     writeBinary: async (relative, bytes) => {await writeFile(path.join(root, relative), bytes);},
     mkdir: async relative => {await mkdir(path.join(root, relative), {recursive: true});},
     remove: async relative => {await unlink(path.join(root, relative)).catch(error => {if (error.code !== 'ENOENT') throw error;});},
     recordPaths: async () => (await walk('')).filter(p => /(?:^|\/)image-records\/[^/]+\.md$/.test(p)),
     pendingPaths: async () => walk('.image-ledger/staging'),
+    operationPaths: async () => walk('.image-ledger/operations'),
   };
   const store = new MediaStore(io, {storageLayout}); await store.initialize();
   return {root, io, store, cleanup: () => rm(root, {recursive: true, force: true})};
@@ -111,18 +116,16 @@ test('Describe later preserves newer saved properties and references while a dup
       sourceName: 'Updated source name',
       sourceNotes: ['First.md', 'Third.md'],
     };
-    await f.store.persist(current);
+    await f.io.write(current.recordPath, serializeRecord(current));
     const saved = await f.store.describe(duplicate, null);
     assert.equal(saved.description, current.description);
     assert.equal(saved.captionStatus, current.captionStatus);
     assert.equal(saved.sourceName, current.sourceName);
     assert.deepEqual(saved.sourceNotes, ['First.md', 'Third.md', 'Second.md']);
-    assert.equal(duplicate.previous.description, current.description);
 
-    await f.store.persist({...saved, description: 'Another saved edit'});
+    await f.io.write(saved.recordPath, serializeRecord({...saved, description: 'Another saved edit'}));
     const explicit = await f.store.describe(duplicate, 'My chosen replacement');
     assert.equal(explicit.description, 'My chosen replacement');
-    assert.equal(duplicate.previous.description, 'Another saved edit');
     assert.deepEqual(explicit.sourceNotes, saved.sourceNotes);
   } finally {await f.cleanup();}
 });
@@ -137,6 +140,75 @@ test('description save refuses an unreadable current record and leaves staging r
     assert.equal(await f.io.read(prepared.record.recordPath), 'Malformed record');
     assert.deepEqual((await f.store.pendingCaptures()).map(item => item.id), [pending.id]);
   } finally {await f.cleanup();}
+});
+
+test('capture description retries preserve unrelated saved fields and new source references', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const first = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'First.md'));
+  const original = await f.store.describe(first, 'Original description');
+  const duplicate = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Second.md'));
+  const process = f.io.process;
+  let edited = false;
+  f.io.process = async (file, update) => {
+    if (!edited) {
+      edited = true;
+      await f.io.write(file, serializeRecord({...original, sourceName: 'New filename', sourceNotes: ['First.md', 'Third.md']}));
+    }
+    await process(file, update);
+  };
+
+  const saved = await f.store.describe(duplicate, 'Submitted description');
+
+  assert.equal(edited, true);
+  assert.equal(saved.description, 'Submitted description');
+  assert.equal(saved.sourceName, 'New filename');
+  assert.deepEqual(saved.sourceNotes, ['First.md', 'Third.md', 'Second.md']);
+  assert.deepEqual(parseRecord(await f.io.read(saved.recordPath)), saved);
+  assert.match(await f.io.read(saved.sidecarPath), /Submitted description/);
+  assert.deepEqual(f.store.allRecords(), [saved]);
+});
+
+test('capture description and a queued scan preserve a newer concurrent caption', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const first = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'First.md'));
+  const original = await f.store.describe(first, 'Original description');
+  const duplicate = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Second.md'));
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  const describing = f.store.describe(duplicate, 'Submitted description', 'Second.md', async () => {
+    enter();
+    await released;
+  });
+  await entered;
+  await f.io.write(original.recordPath, serializeRecord({...original, description: 'Newer caption'}));
+  const scanning = f.store.refresh();
+  release();
+  const saved = await describing;
+  await scanning;
+
+  assert.equal(saved.description, 'Newer caption');
+  assert.deepEqual(saved.sourceNotes, ['First.md', 'Second.md']);
+  assert.deepEqual(parseRecord(await f.io.read(saved.recordPath)), saved);
+  assert.match(await f.io.read(saved.sidecarPath), /Newer caption/);
+  assert.deepEqual(f.store.allRecords(), [saved]);
+});
+
+test('preparing a staged capture never replaces an unreadable existing record', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'First.md');
+  const prepared = await f.store.prepare(pending);
+  const content = 'Unreadable record kept for inspection';
+  await f.io.write(prepared.record.recordPath, content);
+
+  await assert.rejects(f.store.prepare(pending), /Refusing to overwrite an existing image record/);
+
+  assert.equal(await f.io.read(prepared.record.recordPath), content);
+  assert.deepEqual((await f.store.pendingCaptures()).map(item => item.id), [pending.id]);
 });
 test('failed record write leaves recoverable staging and never reports successful completion', async () => {
   const f = await fixture();

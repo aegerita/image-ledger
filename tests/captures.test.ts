@@ -45,6 +45,12 @@ function fixture(describe: (record: ImageRecord) => Promise<string | null> = asy
   const bytes = new Map<string, Uint8Array>();
   const folders = new Set<string>();
   const io: VaultIO = {
+    reserveId: async id => {
+      const reservation = `.image-ledger/ids/${id}`;
+      if (text.has(reservation)) return false;
+      text.set(reservation, '');
+      return true;
+    },
     exists: async path => text.has(path) || bytes.has(path) || folders.has(path),
     read: async path => {
       const value = text.get(path);

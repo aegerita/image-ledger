@@ -8,6 +8,8 @@ npm test
 
 This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, description conflicts, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. Partial-save tests rebuild runtime objects from persisted data after note, sidecar, record, and receipt-cleanup failures, then recover twice. It does not exercise the loaded Obsidian app.
 
+ID tests force collisions with files, receipts, and permanent reservations, race concurrent captures, bound retries, and recover legacy UUID captures. The host checks verify short filenames, literal XMP identifiers, and retained reservations through capture and reload.
+
 GitHub Actions runs this command with Node.js 22 on Ubuntu for every push and pull request. The `Build and test` job checks the build and unit/filesystem tests. Obsidian host checks remain local because they require a running app and its enabled CLI.
 
 ## Obsidian host test

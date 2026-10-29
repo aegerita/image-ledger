@@ -74,7 +74,7 @@ export class RecordPicker extends Modal {
     this.titleEl.setText('Choose an image');
     const input = this.contentEl.createEl('input', {
       type: 'search',
-      attr: {placeholder: 'Search descriptions or UUIDs', 'aria-label': 'Search images'},
+      attr: {placeholder: 'Search descriptions or image IDs', 'aria-label': 'Search images'},
     });
     const results = this.contentEl.createDiv({cls: 'image-ledger-picker'});
     const render = () => {

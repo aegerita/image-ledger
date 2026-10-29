@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { DataWriteOptions, TFile as HostFile, Vault } from 'obsidian';
@@ -39,6 +39,7 @@ async function fixture() {
   };
   const vault = {
     adapter,
+    getFiles: () => [...indexed.values()],
     getAbstractFileByPath: (relative: string) => indexed.get(relative) ?? null,
     createBinary: async (relative: string, data: ArrayBuffer, options?: DataWriteOptions) => {
       assert.equal(bytes.has(relative), false, 'The temporary path must be new');
@@ -76,7 +77,7 @@ async function fixture() {
     },
   } as unknown as Vault;
   return {
-    io: createVaultIO(vault), root, bytes, created, removed, renamed, faults,
+    io: createVaultIO(vault), root, bytes, indexed, created, removed, renamed, faults,
     cleanup: () => rm(root, {recursive: true, force: true}),
   };
 }
@@ -99,6 +100,78 @@ test('a partial image write leaves no final file and can be retried safely', asy
   assert.notEqual(f.created[0].path, f.created[1].path);
   assert.deepEqual(f.created[1].options, {mtime: 12345});
   assert.deepEqual(f.renamed, [destination]);
+});
+
+test('image ID reservations are exclusive across concurrent callers and remain reserved', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const id = '012345abcdef';
+  const results = await Promise.all([f.io.reserveId(id), f.io.reserveId(id)]);
+  assert.deepEqual(results.sort(), [false, true]);
+  assert.equal(await readFile(path.join(f.root, '.image-ledger/ids', id), 'utf8'), '');
+  assert.equal(await f.io.reserveId(id), false);
+  await assert.rejects(f.io.remove(`.image-ledger/ids/${id}`), /Only staging files and image save receipts/);
+});
+
+test('indexed image, sidecar and malformed record filenames reserve their IDs across folders', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const id = '012345abcdef';
+  for (const file of [`1999/images/${id}.jpg`, `images/${id.toUpperCase()}.xmp`, `Archive/image-records/${id}.md`]) {
+    f.indexed.set(file, Object.assign(new TFile(), {path: file}));
+    assert.equal(await f.io.reserveId(id), false);
+    f.indexed.delete(file);
+  }
+  assert.equal(await f.io.reserveId(id), true);
+});
+
+test('staging payloads and save receipts block ID reuse without being replaced', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const id = '012345abcdef';
+  for (const file of [
+    `.image-ledger/staging/${id}.json`,
+    `.image-ledger/staging/${id}.jpg`,
+    `.image-ledger/staging/${id}.png`,
+    `.image-ledger/operations/${id}.json`,
+  ]) {
+    await f.io.write(file, 'Retained collision');
+    assert.equal(await f.io.reserveId(id), false);
+    assert.equal(await readFile(path.join(f.root, file), 'utf8'), 'Retained collision');
+    await f.io.remove(file);
+  }
+  assert.equal(await f.io.reserveId(id), true);
+});
+
+test('ID reservation refuses invalid IDs and propagates filesystem failures', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  for (const id of ['../outside', '012345ABCDEf', '012345abcde', 'not-an-image-id']) {
+    await assert.rejects(f.io.reserveId(id), /Invalid image ID/);
+  }
+  await writeFile(path.join(f.root, '.image-ledger'), 'Keep this file');
+  await assert.rejects(f.io.reserveId('012345abcdef'), {code: 'ENOTDIR'});
+  assert.equal(await readFile(path.join(f.root, '.image-ledger'), 'utf8'), 'Keep this file');
+});
+
+test('short-ID cleanup stays restricted to staging payloads and operation JSON', async t => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  const id = '012345abcdef';
+  for (const file of [`.image-ledger/staging/${id}.png`, `.image-ledger/operations/${id}.json`]) {
+    await f.io.write(file, 'Temporary state');
+    await f.io.remove(file);
+    await assert.rejects(readFile(path.join(f.root, file)), {code: 'ENOENT'});
+  }
+  for (const file of [
+    `.image-ledger/operations/${id}.png`,
+    `.image-ledger/staging/${id}.xmp`,
+    `.image-ledger/staging/../${id}.json`,
+    '.image-ledger/staging/000000000000000000000000000000000000.json',
+    `images/${id}.png`,
+  ]) {
+    await assert.rejects(f.io.remove(file), /Only staging files and image save receipts/);
+  }
 });
 
 test('a failed create cleans its unindexed partial temporary file', async t => {

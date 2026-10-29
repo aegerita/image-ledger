@@ -77,7 +77,10 @@ module.exports = async (app, config) => {
     const sources = saved.sourceNotes.map(note => '  - ' + JSON.stringify('[[' + note.replace(/\.md$/, '') + ']]'));
     assert.ok(read(saved.recordPath).includes('source_notes:\n' + sources.join('\n') + '\n'), 'Frontmatter source notes differ from the snapshot');
     assert.ok(read(saved.sidecarPath).includes(saved.description));
-    assert.ok(read(saved.sidecarPath).includes('urn:uuid:' + saved.id));
+    assert.match(saved.id, /^[0-9a-f]{12}$/);
+    assert.ok(read(saved.sidecarPath).includes('<rdf:li>' + saved.id + '</rdf:li>'));
+    assert.ok(!read(saved.sidecarPath).includes('urn:uuid:'));
+    assert.ok(fs.existsSync(path.join(root, '.image-ledger/ids', saved.id)), 'Missing permanent ID reservation');
     assert.equal(saved.schemaVersion, 2);
     assert.ok(Number.isFinite(Date.parse(saved.importedAt)), 'Missing import time');
     assert.equal('noteDate' in saved, false, 'Image records must not invent a note date');

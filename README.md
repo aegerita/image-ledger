@@ -29,7 +29,7 @@ Interrupted description saves resume when the plugin starts again. If a source n
 
 ## Where your images go
 
-By default, each image gets a unique filename in `images/`, a metadata note in `image-records/`, and a matching `.xmp` metadata file beside the image. Open `image-library.base` to browse the library in Obsidian.
+New images get a 12-character lowercase hexadecimal ID, such as `7f3a9c2d8e10`. By default, the image goes in `images/`, its metadata note in `image-records/`, and its matching `.xmp` metadata file beside the image. Existing UUID filenames and links stay unchanged. Open `image-library.base` to browse the library in Obsidian.
 
 In **Settings → Image Ledger**, **Image storage** can group new files by import year or by the year in a note's name or folder. Existing images stay in place. You can also turn off paste/drop handling or the **Image details** link.
 

@@ -1,8 +1,9 @@
 import { FileSystemAdapter, TFile, type Vault } from 'obsidian';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { VaultIO } from '../images/store';
+import { isImageId } from '../images/ids';
 
 export function createVaultIO(vault: Vault): VaultIO {
   if (!(vault.adapter instanceof FileSystemAdapter)) {
@@ -45,6 +46,40 @@ export function createVaultIO(vault: Vault): VaultIO {
   };
 
   return {
+    reserveId: async id => {
+      if (!isImageId(id)) throw new Error('Invalid image ID.');
+      const key = id.toLowerCase();
+      if (vault.getFiles().some(file => path.posix.parse(file.path).name.toLowerCase() === key)) return false;
+      for (const relative of [
+        `.image-ledger/staging/${key}.json`,
+        `.image-ledger/staging/${key}.jpg`,
+        `.image-ledger/staging/${key}.png`,
+        `.image-ledger/operations/${key}.json`,
+      ]) {
+        try {
+          await lstat(resolve(relative));
+          return false;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+      const reservation = resolve(`.image-ledger/ids/${key}`);
+      await mkdir(path.dirname(reservation), {recursive: true});
+      let handle;
+      try {
+        handle = await open(reservation, 'wx', 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw error;
+      }
+      try {
+        // Keep the claim even after capture cleanup, so a deleted ID cannot be reused.
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return true;
+    },
     exists: p => vault.adapter.exists(p),
     read: p => vault.adapter.read(p),
     readBinary: async p => new Uint8Array(await vault.adapter.readBinary(p)),
@@ -94,7 +129,8 @@ export function createVaultIO(vault: Vault): VaultIO {
       }
     },
     remove: async p => {
-      if (!/^\.image-ledger\/(?:staging\/[0-9a-f-]{36}\.(?:json|jpg|png)|operations\/[0-9a-f-]{36}\.json)$/.test(p)) {
+      const match = /^\.image-ledger\/(staging|operations)\/([^/]+)\.(json|jpg|png)$/.exec(p);
+      if (!match || !isImageId(match[2]) || (match[1] === 'operations' && match[3] !== 'json')) {
         throw new Error('Only staging files and image save receipts may be removed automatically.');
       }
       try {

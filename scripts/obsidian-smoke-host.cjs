@@ -317,6 +317,28 @@ module.exports = async (app, config) => {
         await wait(() => synchronized('sample.png', 'Synthetic PNG.'), 'caption command persistence');
         assert.equal(verifyRecord(record('sample.png')).captionStatus, 'confirmed');
       });
+      await step('Closed capture editor appends to the original saved note', async () => {
+        const closedSource = 'Closed-editor.md';
+        await app.vault.create(closedSource, '# Closed editor sentinel\n');
+        const input = await capture('sample.png', closedSource, 'file');
+        const leaf = app.workspace.getLeavesOfType('markdown').find(leaf => leaf.view.file?.path === closedSource);
+        assert.ok(leaf, 'Missing captured leaf');
+        const before = read(other);
+        const otherLeaf = app.workspace.getLeaf('tab');
+        await otherLeaf.openFile(app.vault.getAbstractFileByPath(other));
+        app.workspace.setActiveLeaf(otherLeaf, {focus: true});
+        leaf.detach();
+        assert.ok(!app.workspace.getLeavesOfType('markdown').some(leaf => leaf.view.file?.path === closedSource));
+        submit(input, null);
+        let finished = false;
+        plugin().captures.enqueue(async () => { finished = true; });
+        await wait(() => finished, 'closed-editor capture completion');
+        assert.ok(read(closedSource).startsWith('# Closed editor sentinel\n\n'));
+        assert.ok(read(closedSource).includes(embed(record('sample.png'), closedSource)), 'Closed editor lost its image insertion');
+        assert.equal(read(other), before, 'Capture inserted into the active note');
+        assert.deepEqual(await plugin().library.store.pendingCaptures(), []);
+        verifyRecord(record('sample.png'));
+      });
       const operations = [];
       await step('Prepare isolated sources for interrupted description saves', async () => {
         for (const [fixture, count, description] of [
@@ -458,7 +480,8 @@ module.exports = async (app, config) => {
         submit(await modal(), 'Recovered synthetic PNG.');
         await wait(async () => (await plugin().library.store.pendingCaptures()).length === 0 && synchronized('sample.png', 'Recovered synthetic PNG.'), 'recovery completion');
         const png = verifyRecord(record('sample.png'));
-        assert.equal(png.id, checkpoint.pngId); assert.equal(png.sourceNotes.length, 2);
+        assert.equal(png.id, checkpoint.pngId);
+        assert.deepEqual([...png.sourceNotes].sort(), [source, other, 'Closed-editor.md'].sort());
         assert.equal(plugin().library.store.allRecords().length, 2);
         assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/staging')), []);
       });

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { App, EditorPosition, TFile } from 'obsidian';
+import type { App, Editor, EditorPosition, TFile } from 'obsidian';
+import type { EditorView } from '@codemirror/view';
 import { CaptureWorkflow } from '../src/captures';
 import type { ImageRecord } from '../src/images/model';
 import type { RecordOperation } from '../src/images/operations';
@@ -106,7 +107,64 @@ function fixture(persisted = {
     };
     leaves.push({view: {file: files.get(path), editor, save: () => io.write(path, content)}});
   };
-  return {io, text, files, store, notes, library, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
+  return {io, text, files, leaves, store, notes, library, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
+}
+
+for (const missing of [false, true]) {
+  test(`closed capture editor ${missing ? 'retains staging when its note is missing' : 'appends to its original note before clearing staging'}`, async () => {
+    const f = fixture();
+    await f.library.ready();
+    await f.io.write('Original.md', '# Original\n');
+    await f.io.write('Other.md', '# Other\n');
+    const file = f.files.get('Original.md')!;
+    const editor = {
+      getCursor: () => ({line: 0, ch: 0}),
+      posToOffset: () => 0,
+      getRange: () => '',
+    } as unknown as Editor;
+    const anchors = new Map();
+    let closed = false;
+    let staleInsertions = 0;
+    const view = {
+      state: {
+        // The host test runtime stubs editorInfoField as undefined.
+        field: (field: unknown) => field === undefined ? {file, editor} : anchors,
+        doc: {sliceString: () => ''},
+      },
+      dispatch: (transaction: {effects?: {value: {id?: string}}; changes?: unknown}) => {
+        if (transaction.changes && closed) staleInsertions++;
+        const anchor = transaction.effects?.value;
+        if (anchor?.id) anchors.set(anchor.id, anchor);
+      },
+    } as unknown as EditorView;
+    (f.notes as unknown as {editors: WeakMap<Editor, EditorView>}).editors.set(editor, view);
+    f.leaves.push({view: {file, editor}});
+    const target = f.notes.captureTarget(editor, file);
+    const captures = f.workflow(async () => {
+      closed = true;
+      f.leaves.length = 0;
+      if (missing) await f.io.remove(file.path);
+      f.openEditor('Other.md');
+      f.activate('Other.md');
+      return 'Closed editor caption';
+    });
+    captures.capture([new File([PNG], 'sample.png', {type: 'image/png'})], target, 'file');
+    await f.drain(captures);
+
+    assert.equal(staleInsertions, 0);
+    assert.equal(f.text.get('Other.md'), '# Other\n');
+    const pending = await f.store.pendingCaptures();
+    if (missing) {
+      assert.equal(f.text.has('Original.md'), false);
+      assert.match(String(f.errors[0]), /original note no longer exists/);
+      assert.equal(pending.length, 1);
+      assert.deepEqual(await f.io.readBinary(pending[0].dataPath), new Uint8Array(PNG));
+    } else {
+      assert.match(f.text.get('Original.md')!, /^# Original\n\n!\[Closed editor caption\]/);
+      assert.deepEqual(f.errors, []);
+      assert.deepEqual(pending, []);
+    }
+  });
 }
 
 test('initialization shares in-flight work but retries after a temporary failure', async () => {

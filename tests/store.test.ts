@@ -7,10 +7,11 @@ import { MediaStore, storageFolder, type VaultIO } from '../src/images/store';
 import { sha256 } from '../src/images/media';
 import { parseRecord, serializeRecord } from '../src/images/records';
 import type { StorageLayout } from '../src/settings';
+import { JPEG } from './fixtures';
 
 // A complete 1×1 PNG, kept as fixed bytes so preservation assertions are independent of the implementation.
 const PNG = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j/pUAAAAASUVORK5CYII=', 'base64'));
-async function fixture(storageLayout: StorageLayout = 'note-year') {
+async function fixture(storageLayout: StorageLayout = 'note-year', newId?: () => string) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-test-'));
   const walk = async (directory: string): Promise<string[]> => {
     const result: string[] = [];
@@ -21,6 +22,18 @@ async function fixture(storageLayout: StorageLayout = 'note-year') {
     return result;
   };
   const io: VaultIO = {
+    reserveId: async id => {
+      const files = await walk('');
+      if (files.some(file => path.posix.basename(file).split('.')[0].toLowerCase() === id)) return false;
+      await mkdir(path.join(root, '.image-ledger/ids'), {recursive: true});
+      try {
+        await writeFile(path.join(root, '.image-ledger/ids', id), '', {flag: 'wx'});
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw error;
+      }
+    },
     exists: async relative => {try {await readFile(path.join(root, relative));return true;} catch {try {return (await readdir(path.join(root, relative))) !== null;} catch {return false;}}},
     read: relative => readFile(path.join(root, relative), 'utf8'),
     readBinary: async relative => new Uint8Array(await readFile(path.join(root, relative))),
@@ -36,16 +49,16 @@ async function fixture(storageLayout: StorageLayout = 'note-year') {
     pendingPaths: async () => walk('.image-ledger/staging'),
     operationPaths: async () => walk('.image-ledger/operations'),
   };
-  const store = new MediaStore(io, {storageLayout}); await store.initialize();
+  const store = new MediaStore(io, {storageLayout}, newId); await store.initialize();
   return {root, io, store, cleanup: () => rm(root, {recursive: true, force: true})};
 }
-test('saves byte-identical UUID image, caption record, sidecar and Base', async () => {
+test('saves byte-identical short-ID image, caption record, sidecar and Base', async () => {
   const f = await fixture();
   try {
     const pending = await f.store.stage({bytes: PNG, name: 'photo.png', method: 'clipboard'}, '2025/12/2025-12-24.md');
     const prepared = await f.store.prepare(pending);
     const record = await f.store.describe(prepared, 'A tiny test image.');
-    assert.match(record.imagePath, /^2025\/images\/[0-9a-f-]{36}\.png$/);
+    assert.match(record.imagePath, /^2025\/images\/[0-9a-f]{12}\.png$/);
     assert.deepEqual(await f.io.readBinary(record.imagePath), PNG);
     assert.equal(record.sha256, sha256(PNG));
     assert.equal(parseRecord(await f.io.read(record.recordPath))?.description, 'A tiny test image.');
@@ -55,19 +68,175 @@ test('saves byte-identical UUID image, caption record, sidecar and Base', async 
     assert.equal((await f.store.pendingCaptures()).length, 0);
   } finally {await f.cleanup();}
 });
-test('stages captures with distinct UUIDv4 image names', async () => {
+test('stages captures with distinct short image names', async () => {
   const f = await fixture();
   try {
     const captures = await Promise.all(Array.from({length: 100}, () =>
       f.store.stage({bytes: PNG, method: 'clipboard'}, 'Projects/Research.md')));
     const ids = captures.map(capture => capture.id);
     for (const id of ids) {
-      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.match(id, /^[0-9a-f]{12}$/);
     }
     assert.equal(new Set(ids).size, ids.length);
   } finally {await f.cleanup();}
 });
-test('restart recovers staged capture and duplicate paste reuses its UUID across years', async () => {
+
+test('forced collisions preserve catalog, orphan files, receipts, and reserved IDs', async t => {
+  const occupied = [
+    'images/000000000001.jpg',
+    'images/000000000002.png',
+    'images/000000000003.xmp',
+    'image-records/000000000004.md',
+    '.image-ledger/staging/000000000005.json',
+    '.image-ledger/staging/000000000006.png',
+    '.image-ledger/operations/000000000007.json',
+    '.image-ledger/ids/000000000008',
+    '1999/images/000000000009.jpg',
+    'Archive/image-records/00000000000A.md',
+  ];
+  let counter = 0;
+  const f = await fixture('flat', () => (++counter).toString(16).padStart(12, '0'));
+  t.after(f.cleanup);
+  for (const file of occupied) {
+    await f.io.mkdir(path.posix.dirname(file));
+    await f.io.write(file, 'Existing content');
+  }
+
+  const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'Source.md');
+
+  assert.equal(pending.id, '00000000000b');
+  assert.deepEqual(await f.io.readBinary(pending.dataPath), PNG);
+  for (const file of occupied) assert.equal(await f.io.read(file), 'Existing content');
+});
+
+test('concurrent stores retry an exclusive reservation collision without mixing payloads', async t => {
+  const ids = ['aaaaaaaaaaaa', 'aaaaaaaaaaaa', 'bbbbbbbbbbbb'];
+  const generate = () => ids.shift()!;
+  const f = await fixture('flat', generate);
+  t.after(f.cleanup);
+  const other = new MediaStore(f.io, {storageLayout: 'flat'}, generate);
+  const [first, second] = await Promise.all([
+    f.store.stage({bytes: PNG, method: 'clipboard'}, 'One.md'),
+    other.stage({bytes: JPEG, method: 'drop'}, 'Two.md'),
+  ]);
+
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(await f.io.readBinary(first.dataPath), PNG);
+  assert.deepEqual(await f.io.readBinary(second.dataPath), new Uint8Array(JPEG));
+  assert.equal(JSON.parse(await f.io.read(first.transactionPath)).sourcePath, 'One.md');
+  assert.equal(JSON.parse(await f.io.read(second.transactionPath)).sourcePath, 'Two.md');
+});
+
+test('ID collision retries are bounded and filesystem failures are not treated as collisions', async t => {
+  let calls = 0;
+  const f = await fixture('flat', () => {
+    calls++;
+    return 'aaaaaaaaaaaa';
+  });
+  t.after(f.cleanup);
+  await f.io.reserveId('aaaaaaaaaaaa');
+  await assert.rejects(f.store.stage({bytes: PNG, method: 'file'}, 'Source.md'), /after 100 attempts/);
+  assert.equal(calls, 100);
+  assert.deepEqual(await f.store.pendingCaptures(), []);
+  f.io.reserveId = async () => { throw new Error('Disk full'); };
+  await assert.rejects(f.store.stage({bytes: PNG, method: 'file'}, 'Source.md'), /Disk full/);
+  assert.equal(calls, 101);
+});
+
+test('completed ID reservations survive removal of all image files and restart', async t => {
+  const ids = ['aaaaaaaaaaaa', 'aaaaaaaaaaaa', 'bbbbbbbbbbbb'];
+  const generate = () => ids.shift()!;
+  const f = await fixture('flat', generate);
+  t.after(f.cleanup);
+  const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'Source.md');
+  const {record} = await f.store.prepare(pending);
+  await f.store.complete(pending);
+  for (const file of [record.imagePath, record.recordPath, record.sidecarPath]) {
+    await unlink(path.join(f.root, file));
+  }
+  const restarted = new MediaStore(f.io, {storageLayout: 'flat'}, generate);
+  await restarted.initialize();
+  const next = await restarted.stage({bytes: JPEG, method: 'file'}, 'Next.md');
+  assert.equal(next.id, 'bbbbbbbbbbbb');
+  assert.equal(await f.io.exists(`.image-ledger/ids/${record.id}`), true);
+});
+
+test('legacy UUID staging recovers and duplicate imports preserve its filenames and XMP identity', async t => {
+  const f = await fixture('flat');
+  t.after(f.cleanup);
+  const staged = await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md');
+  const id = '91d1699d-9f0a-4b87-9388-a57ecaaac171';
+  const legacy = {
+    ...staged, id,
+    dataPath: `.image-ledger/staging/${id}.png`,
+    transactionPath: `.image-ledger/staging/${id}.json`,
+  };
+  await f.io.write(legacy.transactionPath, JSON.stringify(legacy));
+  await f.io.writeBinary(legacy.dataPath, PNG);
+  await f.store.complete(staged);
+  const restarted = new MediaStore(f.io);
+  await restarted.initialize();
+  assert.deepEqual(await restarted.pendingCaptures(), [legacy]);
+  const prepared = await restarted.prepare(legacy);
+  const record = await restarted.describe(prepared, 'Legacy image');
+  await restarted.complete(legacy);
+  const pending = await restarted.stage({bytes: PNG, method: 'file'}, 'Another.md');
+  assert.match(pending.id, /^[0-9a-f]{12}$/);
+  const duplicate = await restarted.prepare(pending);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.record.id, id);
+  assert.equal(duplicate.record.imagePath, `images/${id}.png`);
+  assert.match(await f.io.read(record.sidecarPath), new RegExp(`urn:uuid:${id}`));
+});
+
+test('records with the same ID and different hashes stop scanning without merging or overwriting', async t => {
+  const f = await fixture('flat');
+  t.after(f.cleanup);
+  const {record} = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Source.md'));
+  const conflict = {
+    ...record, recordPath: `Archive/image-records/${record.id}.md`, sha256: 'f'.repeat(64),
+  };
+  await f.io.mkdir('Archive/image-records');
+  const original = await f.io.read(record.recordPath);
+  const conflicting = serializeRecord(conflict);
+  await f.io.write(conflict.recordPath, conflicting);
+  await assert.rejects(new MediaStore(f.io).initialize(), /Image ID conflict/);
+  assert.equal(await f.io.read(record.recordPath), original);
+  assert.equal(await f.io.read(conflict.recordPath), conflicting);
+  assert.deepEqual(await f.io.readBinary(record.imagePath), PNG);
+});
+
+for (const interrupted of [false, true]) {
+  test(`ID conflicts stop startup before ${interrupted ? 'unfinished saves' : 'Bases edits'} write any files`, async t => {
+    const f = await fixture('flat');
+    t.after(f.cleanup);
+    const {record} = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Source.md'));
+    await f.io.write(record.recordPath, serializeRecord(record).replace(
+      'description: "Description pending"', 'description: "Edited in Bases"',
+    ));
+    const conflict = {
+      ...record, recordPath: `Archive/image-records/${record.id}.md`, sha256: 'f'.repeat(64),
+    };
+    await f.io.mkdir('Archive/image-records');
+    await f.io.write(conflict.recordPath, serializeRecord(conflict));
+    if (interrupted) {
+      await f.io.write(`.image-ledger/operations/${record.id}.json`, JSON.stringify({
+        version: 1, recordPath: record.recordPath, baseline: record,
+        intent: {kind: 'description', description: 'Interrupted caption'}, synchronize: true, notes: {},
+      }));
+    }
+    let writes = 0;
+    f.io.write = async () => { writes++; };
+    f.io.process = async () => { writes++; };
+    const synchronize = async () => { writes++; };
+
+    await assert.rejects(new MediaStore(f.io).initialize(synchronize), /Image ID conflict/);
+
+    assert.equal(writes, 0);
+    assert.deepEqual(await f.io.readBinary(record.imagePath), PNG);
+  });
+}
+test('restart recovers staged capture and duplicate paste reuses its ID across years', async () => {
   const f = await fixture();
   try {
     const pending = await f.store.stage({bytes: PNG, method: 'clipboard'}, '2026/10/2026-10-17.md');

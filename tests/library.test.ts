@@ -29,6 +29,12 @@ function fixture(persisted = {
   let recordReads = 0;
   let recordScans = 0;
   const io: VaultIO = {
+    reserveId: async id => {
+      const reservation = `.image-ledger/ids/${id}`;
+      if (text.has(reservation)) return false;
+      text.set(reservation, '');
+      return true;
+    },
     exists: async path => text.has(path) || bytes.has(path) || folders.has(path),
     read: async path => {
       if (/(?:^|\/)image-records\/[^/]+\.md$/.test(path)) recordReads++;

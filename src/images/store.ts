@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createImageId, isImageId } from './ids';
 import { detectImageFormat, extractMetadata, sha256 } from './media';
 import { BASE_CONTENT, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from './records';
 import type { ImageRecord, MediaInput } from './model';
@@ -7,6 +7,7 @@ import type { StorageLayout } from '../settings';
 import { OPERATION_DIR, operationPath, parseOperation, type ProjectionJournal, type RecordIntent, type RecordOperation } from './operations';
 
 export interface VaultIO {
+  reserveId(id: string): Promise<boolean>;
   exists(path: string): Promise<boolean>;
   read(path: string): Promise<string>;
   write(path: string, text: string): Promise<void>;
@@ -94,6 +95,7 @@ export class MediaStore {
   constructor(
     private io: VaultIO,
     private settings: {storageLayout: StorageLayout} = {storageLayout: 'flat'},
+    private newId: () => string = createImageId,
   ) {}
 
   async initialize(synchronize?: SynchronizeRecord): Promise<void> {
@@ -110,16 +112,32 @@ export class MediaStore {
   }
 
   private async refreshRecords(synchronize?: SynchronizeRecord): Promise<void> {
+    const saved = new Map<string, {content: string; record: ImageRecord | null}>();
+    const identities = new Map<string, string>();
+    // Detect conflicting imports before recovery or reconciliation can write anything.
+    for (const file of await this.io.recordPaths()) {
+      const content = await this.io.read(file);
+      const record = parseRecord(content);
+      if (record) {
+        const hash = identities.get(record.id);
+        if (hash && hash !== record.sha256) {
+          throw new Error(`Image ID conflict: ${record.id} belongs to different image hashes. Both records were preserved.`);
+        }
+        identities.set(record.id, record.sha256);
+      }
+      saved.set(file, {content, record});
+    }
     if (synchronize) {
       for (const file of await this.io.operationPaths()) {
-        await this.resumeOperation(file, synchronize);
+        const record = await this.resumeOperation(file, synchronize);
+        const content = await this.io.read(record.recordPath);
+        saved.set(record.recordPath, {content, record: parseRecord(content)});
       }
     }
     const records = new Map<string, ImageRecord>();
     const hashes = new Map<string, ImageRecord>();
-    for (const file of await this.io.recordPaths()) {
-      let content = await this.io.read(file);
-      let record = parseRecord(content);
+    for (const [file, entry] of saved) {
+      let {content, record} = entry;
       if (record && record.recordPath !== file && synchronize && !await this.io.exists(record.recordPath)) {
         if (await this.findMovedRecord(record) === file) {
           await this.mutate(file, record.id, {kind: 'reconcile'}, synchronize);
@@ -150,9 +168,9 @@ export class MediaStore {
 
   async stage(input: MediaInput, sourcePath: string): Promise<PendingCapture> {
     const format = detectImageFormat(input.bytes);
-    const id = randomUUID();
     const now = new Date();
     const folder = storageFolder(sourcePath, now, this.settings.storageLayout);
+    const id = await this.reserveId(folder);
     const pending: PendingCapture = {
       version: 1,
       id,
@@ -175,6 +193,30 @@ export class MediaStore {
       throw new Error('Image staging verification failed. The original clipboard image has not been inserted.');
     }
     return pending;
+  }
+
+  private async reserveId(folder: string): Promise<string> {
+    const prefix = folder ? `${folder}/` : '';
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const id = this.newId();
+      if (!isImageId(id) || id.length !== 12) throw new Error('Invalid generated image ID.');
+      if (this.records.has(id)) continue;
+      const destinations = [
+        `${prefix}images/${id}.jpg`,
+        `${prefix}images/${id}.png`,
+        `${prefix}images/${id}.xmp`,
+        `${prefix}image-records/${id}.md`,
+      ];
+      let occupied = false;
+      for (const destination of destinations) {
+        if (await this.io.exists(destination)) {
+          occupied = true;
+          break;
+        }
+      }
+      if (!occupied && await this.io.reserveId(id)) return id;
+    }
+    throw new Error('Could not reserve a unique image ID after 100 attempts. No existing files were replaced.');
   }
 
   prepare(pending: PendingCapture, synchronize?: SynchronizeRecord): Promise<PreparedCapture> {
@@ -443,7 +485,7 @@ export class MediaStore {
       try {
         const item = JSON.parse(await this.io.read(file)) as PendingCapture;
         if (item.version === 1
-          && /^[0-9a-f-]{36}$/.test(item.id)
+          && isImageId(item.id)
           && ['jpg', 'png'].includes(item.format)
           && item.transactionPath === `${STATE_DIR}/${item.id}.json`
           && item.dataPath === `${STATE_DIR}/${item.id}.${item.format}`

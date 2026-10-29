@@ -1,9 +1,9 @@
 import { posix } from 'node:path';
 import type { ImageMetadata, ImageRecord } from './model';
+import { isImageId, isLegacyImageId } from './ids';
 
 const RECORD_START = '<!-- image-ledger:record -->';
 const RECORD_END = '<!-- /image-ledger:record -->';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
 const RECORD_FIELDS = new Set([
   'schemaVersion', 'id', 'description', 'captionStatus',
@@ -176,10 +176,11 @@ function readSourceNotes(frontmatter: string): string[] | undefined {
   });
 }
 
-/** A standard XMP sidecar keeps the UUID and caption alongside unchanged bytes. */
+/** A standard XMP sidecar keeps the image ID and caption alongside unchanged bytes. */
 export function serializeSidecar(record: ImageRecord): string {
   if (!isImageRecord(record)) throw new Error('Cannot serialize an invalid image record.');
   const description = xml(normalizeDescription(record.description));
+  const identifier = isLegacyImageId(record.id) ? `urn:uuid:${record.id}` : record.id;
   const created = record.metadata.capturedAt === null
     ? ''
     : `\n      <xmp:CreateDate>${xml(record.metadata.capturedAt)}</xmp:CreateDate>`;
@@ -189,7 +190,7 @@ export function serializeSidecar(record: ImageRecord): string {
     <rdf:Description rdf:about=""
       xmlns:dc="http://purl.org/dc/elements/1.1/"
       xmlns:xmp="http://ns.adobe.com/xap/1.0/">
-      <dc:identifier><rdf:Bag><rdf:li>urn:uuid:${xml(record.id)}</rdf:li></rdf:Bag></dc:identifier>
+      <dc:identifier><rdf:Bag><rdf:li>${xml(identifier)}</rdf:li></rdf:Bag></dc:identifier>
       <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${description}</rdf:li></rdf:Alt></dc:description>${created}
     </rdf:Description>
   </rdf:RDF>
@@ -282,7 +283,7 @@ export function isImageRecord(value: unknown): value is ImageRecord {
   if (Object.keys(value).some(key => !RECORD_FIELDS.has(key))) return false;
   const item = value as Partial<ImageRecord>;
   if (item.schemaVersion !== 2
-    || typeof item.id !== 'string' || !UUID.test(item.id)
+    || !isImageId(item.id)
     || typeof item.description !== 'string' || !item.description.trim()
     || (item.captionStatus !== 'confirmed' && item.captionStatus !== 'pending')
     || typeof item.sha256 !== 'string' || !SHA256.test(item.sha256)

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BASE_CONTENT, markdownEmbed, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/images/records';
 import type { ImageRecord } from '../src/images/model';
+import { createImageId, isImageId, isLegacyImageId } from '../src/images/ids';
 
 const id = '91d1699d-f733-45a9-905c-f630cc2e5426';
 function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
@@ -43,6 +44,40 @@ test('portable record round trips every field, preserving raw metadata', () => {
   assert.match(serializeRecord(record), /local_file: "\[\[2026\/images\//);
   assert.match(serializeRecord(record), /source_notes:\n  - "\[\[2026\/October\/17\]\]"/);
   assert.match(serializeRecord(record), /capture_time_status: "source_offset"/);
+});
+
+test('image IDs generate lowercase short hex and accept unchanged legacy UUIDs', () => {
+  assert.match(createImageId(), /^[0-9a-f]{12}$/);
+  assert.equal(isImageId('012345abcdef'), true);
+  assert.equal(isImageId(id), true);
+  assert.equal(isImageId(id.toUpperCase()), true);
+  assert.equal(isLegacyImageId(id), true);
+  assert.equal(isLegacyImageId('012345abcdef'), false);
+  for (const invalid of [
+    undefined, null, 123456789012, '', '012345abcde', '012345abcdef0',
+    '012345ABCDEF', '012345abcdeg', '012345abcdef\n', '../012345abcdef',
+    id.replace('-45a9-', '-05a9-'), id.replace('-905c-', '-705c-'),
+  ]) {
+    assert.equal(isImageId(invalid), false, String(invalid));
+  }
+});
+
+test('short image records round trip, embed, and serialize literal XMP identifiers', () => {
+  const shortId = '012345abcdef';
+  const record = fixture({
+    id: shortId,
+    imagePath: `images/${shortId}.jpg`,
+    recordPath: `image-records/${shortId}.md`,
+    sidecarPath: `images/${shortId}.xmp`,
+  });
+  const markdown = serializeRecord(record);
+  assert.deepEqual(parseRecord(markdown), record);
+  assert.deepEqual(parseRecordSnapshot(markdown), record);
+  assert.equal(markdownEmbed(record, 'Notes/Today.md'), `![${record.description}](../images/${shortId}.jpg)`);
+  assert.match(serializeSidecar(record), /<rdf:li>012345abcdef<\/rdf:li>/);
+  assert.doesNotMatch(serializeSidecar(record), /urn:uuid:/);
+  assert.equal(parseRecordSnapshot(markdown.replaceAll(shortId, shortId.toUpperCase())), null);
+  assert.throws(() => serializeRecord({...record, id: 'not-an-image-id'}), /invalid image record/);
 });
 
 test('snapshot parser accepts only current records and matching markers', () => {

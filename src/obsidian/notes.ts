@@ -190,7 +190,12 @@ export class NoteImages {
   private async insertAtAnchor(file: TFile, view: EditorView | undefined, anchorId: string, markdown: string): Promise<void> {
     const info = view?.state.field(editorInfoField, false);
     const anchor = view?.state.field(insertionAnchors, false)?.get(anchorId);
-    if (view && anchor && info?.file === file) {
+    const live = view && this.app.workspace.getLeavesOfType('markdown')
+      .some(leaf => {
+        const markdown = leaf.view as MarkdownView;
+        return markdown.file === file && this.editors.get(markdown.editor) === view;
+      });
+    if (live && anchor && info?.file === file) {
       const to = view.state.doc.sliceString(anchor.from, anchor.to) === anchor.selected ? anchor.to : anchor.from;
       view.dispatch({
         changes: {from: anchor.from, to, insert: markdown},

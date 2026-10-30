@@ -19,14 +19,18 @@ npm test
 | --- | --- |
 | `src/main.ts` | Plugin startup, commands, and event registration. |
 | `src/captures.ts` | Capture batches, description prompts, and recovery on one shared queue. |
-| `src/images/` | Image model, byte validation/metadata, record formats, and queued record mutations. No Obsidian imports. |
+| `src/images/` | Image model, byte validation/metadata, record formats, managed embed lookup, and queued record mutations. No Obsidian imports. |
 | `src/obsidian/notes.ts` | Editor tracking, insertion positions, and image embeds in notes. |
-| `src/obsidian/library.ts` | Record initialization, description synchronization, renames, and audits. |
+| `src/obsidian/library.ts` | Record initialization, contextual menus, description synchronization, renames, and audits. |
 | `src/obsidian/ui.ts` | Description dialog, image picker, and settings tab. |
 | `src/obsidian/vault-io.ts`, `anchors.ts` | Filesystem access and CodeMirror insertion state. |
 | `src/settings.ts` | Saved settings and defaults. |
 
 Capture flow: stage received bytes, prepare or reuse an image, ask for a description, insert into the original note, then clear staging. Preserve that order so interrupted captures remain recoverable. Renames and recovery share the capture queue. Descriptions edited in Bases are read back before capture processing; avoid replacing them with stale values.
+
+`images/embeds.ts` parses inline Markdown images with Lezer, excluding code, escaped markers, HTML comments and frontmatter. It resolves URL-encoded relative destinations against the source note and matches the resulting image path. Nested alt text is supported; wiki and reference-style embeds are not resolved. The parser and its licenses are bundled, so lookup does not depend on an Obsidian parser export.
+
+`RecordLibrary` builds editor/file menus synchronously from its current catalog. Both handlers use `addRecordMenu` for available actions. The edit callback captures the image ID, refreshes the record before opening the dialog, and uses the command's existing save path. A removed record reports an error instead of falling back to another image. `main.ts` registers and disposes the workspace event hooks through the plugin lifecycle.
 
 `images/ids.ts` generates 12 lowercase hex characters from six random bytes and validates both short IDs and existing UUIDs. SHA-256 remains separate. Before staging, check the catalog, indexed filenames, pinned output paths, and hidden receipts; reserve the ID exclusively in `.image-ledger/ids/`. Retry collisions up to 100 times. Keep these empty reservation files after cleanup or deletion so IDs cannot be reused. There is no deletion subsystem yet; future deletion must preserve reservations. Catalog scans reject the same ID with different hashes. XMP stores short IDs literally and UUIDs as `urn:uuid:<id>`.
 

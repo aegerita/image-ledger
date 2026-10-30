@@ -1,5 +1,6 @@
-import { Notice, type App } from 'obsidian';
+import { Notice, TFile, type App, type Editor, type MarkdownFileInfo, type MarkdownView, type Menu, type TAbstractFile } from 'obsidian';
 import type { ImageRecord } from '../images/model';
+import { findManagedImage, managedImageEmbeds } from '../images/embeds';
 import { MediaStore, type PendingCapture, type PreparedCapture } from '../images/store';
 import type { ProjectionJournal } from '../images/operations';
 import { NoteImages } from './notes';
@@ -55,13 +56,35 @@ export class RecordLibrary {
     return this.store.rename(previousPath, file.path, this.synchronize);
   }
 
-  async editDescription(describe: (record: ImageRecord) => Promise<string | null>): Promise<void> {
+  addEditorMenu(menu: Menu, editor: Editor, info: MarkdownFileInfo | MarkdownView, describe: (record: ImageRecord) => Promise<string | null>): void {
+    if (!info.file || ('getMode' in info && info.getMode() !== 'source')) return;
+    const selected = findManagedImage(editor.getValue(), info.file.path, this.store.allRecords(), {
+      from: editor.posToOffset(editor.getCursor('from')),
+      to: editor.posToOffset(editor.getCursor('to')),
+    });
+    if (selected) this.addRecordMenu(menu, selected.record, describe);
+  }
+
+  addFileMenu(menu: Menu, file: TAbstractFile, describe: (record: ImageRecord) => Promise<string | null>): void {
+    if (!(file instanceof TFile)) return;
+    const record = this.store.allRecords().find(record => record.imagePath === file.path || record.recordPath === file.path);
+    if (record) this.addRecordMenu(menu, record, describe);
+  }
+
+  private addRecordMenu(menu: Menu, record: ImageRecord, describe: (record: ImageRecord) => Promise<string | null>): void {
+    menu.addItem(item => item
+      .setTitle('Edit image description')
+      .setIcon('pencil')
+      .onClick(() => this.editDescription(describe, record.id)));
+  }
+
+  async editDescription(describe: (record: ImageRecord) => Promise<string | null>, recordId?: string): Promise<void> {
     await this.selectRecord(async record => {
       const description = await describe(record);
       if (description === null) return;
       await this.store.setDescription(record, description, this.synchronize);
       new Notice('Image description updated.');
-    });
+    }, recordId);
   }
 
   async audit(): Promise<void> {
@@ -81,21 +104,42 @@ export class RecordLibrary {
     }
   }
 
-  private async selectRecord(action: (record: ImageRecord) => Promise<void>): Promise<void> {
+  private async selectRecord(action: (record: ImageRecord) => Promise<void>, recordId?: string): Promise<void> {
     try {
+      const active = this.app.workspace.getActiveFile();
+      const info = this.app.workspace.activeEditor as MarkdownFileInfo | MarkdownView | null;
+      const reading = info && 'getMode' in info && info.getMode() === 'preview';
+      const editor = !reading && info?.file === active ? info?.editor : undefined;
+      const text = editor?.getValue();
+      const selection = editor ? {
+        from: editor.posToOffset(editor.getCursor('from')),
+        to: editor.posToOffset(editor.getCursor('to')),
+      } : undefined;
       await this.ready();
       await this.store.refresh(this.synchronize);
-      const active = this.app.workspace.getActiveFile();
+      const records = this.store.allRecords();
+      if (recordId) {
+        const record = records.find(record => record.id === recordId);
+        if (!record) throw new Error('This image record is no longer available.');
+        return await action(record);
+      }
       if (active) {
-        const record = this.store.allRecords().find(record => record.recordPath === active.path || record.imagePath === active.path);
+        const record = records.find(record => record.recordPath === active.path || record.imagePath === active.path);
         if (record) return await action(record);
       }
-      const records = this.store.allRecords();
       if (!records.length) {
         new Notice('No images yet. Paste a JPEG or PNG into a note.');
         return;
       }
-      new RecordPicker(this.app, records, record => void action(record).catch(this.report)).open();
+      let choices = records;
+      if (active?.extension === 'md') {
+        const content = text ?? await this.app.vault.read(active);
+        const selected = selection && findManagedImage(content, active.path, records, selection);
+        if (selected) return await action(selected.record);
+        const inNote = [...new Set(managedImageEmbeds(content, active.path, records).map(embed => embed.record))];
+        if (inNote.length) choices = inNote;
+      }
+      new RecordPicker(this.app, choices, record => void action(record).catch(this.report)).open();
     } catch (error) {
       this.report(error);
     }

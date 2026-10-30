@@ -28,6 +28,12 @@ export default class ImageLedgerPlugin extends Plugin {
     this.registerEditorExtension(this.notes.editorExtension());
     this.registerCaptureEvents();
     this.registerCommands();
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
+      this.library.addEditorMenu(menu, editor, info, record => this.askDescription(record));
+    }));
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+      this.library.addFileMenu(menu, file, record => this.askDescription(record));
+    }));
     this.addSettingTab(new MediaSettings(this.app, this));
     this.registerEvent(this.app.vault.on('modify', file => this.library.onModify(file)));
     this.registerEvent(this.app.vault.on('rename', (file, previousPath) => {

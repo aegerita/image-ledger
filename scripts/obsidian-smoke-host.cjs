@@ -109,6 +109,35 @@ module.exports = async (app, config) => {
     assert.ok(button, 'Missing real caption button'); button.click();
   };
   const source = 'Projects/Research.md', other = '2027/01/2027-01-04.md';
+  const fakeMenu = () => {
+    const entries = [];
+    return {
+      entries,
+      addSeparator() { return this; },
+      addItem(build) {
+        const entry = {};
+        const item = {
+          setTitle(title) {
+            entry.title = title;
+            return this;
+          },
+          setIcon(icon) {
+            entry.icon = icon;
+            return this;
+          },
+          setSection() { return this; },
+          setDisabled() { return this; },
+          onClick(click) {
+            entry.click = click;
+            return this;
+          },
+        };
+        build(item);
+        entries.push(entry);
+        return this;
+      },
+    };
+  };
   const open = async note => {
     guard(); await app.workspace.openLinkText(note, '', false);
     return wait(() => {
@@ -316,6 +345,177 @@ module.exports = async (app, config) => {
         submit(await modal(), 'Synthetic PNG.');
         await wait(() => synchronized('sample.png', 'Synthetic PNG.'), 'caption command persistence');
         assert.equal(verifyRecord(record('sample.png')).captionStatus, 'confirmed');
+      });
+      await step('Cursor-directed description command in a source note', async () => {
+        const view = await open(source);
+        const png = record('sample.png');
+        const offset = view.editor.getValue().indexOf(embed(png, source));
+        assert.ok(offset >= 0);
+        view.editor.setCursor(view.editor.offsetToPos(offset + 3));
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const input = await modal();
+        assert.equal(input.value, 'Synthetic PNG.');
+        assert.equal(documents().some(doc => doc.querySelector('.image-ledger-picker')), false, 'Cursor match opened a picker');
+        submit(input, 'Cursor-edited PNG.');
+        await wait(() => synchronized('sample.png', 'Cursor-edited PNG.'), 'cursor caption persistence');
+        verifyRecord(record('sample.png'));
+      });
+      const picker = () => wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.image-ledger-picker')])[0], 'image picker');
+      await step('Markdown lookup review regressions and editor-menu API prototype', async () => {
+        const png = record('sample.png');
+        const prototype = 'Menu-prototype.md';
+        const target = './' + png.imagePath;
+        const content = `# Prototype\n\n![Photo [draft]](${target})\n\n\`![Example](${target})\`\n`;
+        await app.vault.create(prototype, content);
+        const view = await open(prototype);
+        const offset = content.indexOf('![Photo') + 3;
+        receipt.menuPrototype = [];
+        for (const livePreview of [false, true]) {
+          await view.leaf.setViewState({type: 'markdown', state: {file: prototype, mode: 'source', source: !livePreview}});
+          await wait(() => view.getMode() === 'source' && plugin().notes.hasEditor(view.editor), 'prototype editor mode');
+          assert.equal(view.getState().source, !livePreview);
+          view.editor.setCursor(view.editor.offsetToPos(offset));
+          const menu = fakeMenu();
+          let eventReceived = false;
+          const listener = app.workspace.on('editor-menu', (received, editor, info) => {
+            if (received !== menu) return;
+            assert.equal(info.file.path, prototype);
+            assert.equal(editor.posToOffset(editor.getCursor()), offset);
+            eventReceived = true;
+          });
+          try {
+            app.workspace.trigger('editor-menu', menu, view.editor, view);
+            assert.equal(eventReceived, true);
+          } finally {
+            app.workspace.offref(listener);
+          }
+          const actions = menu.entries.filter(entry => entry.title === 'Edit image description');
+          assert.equal(actions.length, 1);
+          const completed = actions[0].click();
+          const menuInput = await modal();
+          assert.equal(menuInput.value, png.description);
+          submit(menuInput, null);
+          await completed;
+          assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+          const input = await modal();
+          assert.equal(input.value, png.description);
+          submit(input, null);
+          receipt.menuPrototype.push({mode: livePreview ? 'Live Preview' : 'Source', apiEvent: 'PASS', suppliedCursorMapsToEmbed: true, nativeRightClick: 'NOT RUN'});
+        }
+        view.editor.setCursor(view.editor.offsetToPos(content.indexOf('![Example') + 3));
+        const codeMenu = fakeMenu();
+        app.workspace.trigger('editor-menu', codeMenu, view.editor, view);
+        assert.equal(codeMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const list = await picker();
+        assert.equal(list.querySelectorAll('button').length, 1);
+        list.querySelector('button').click();
+        submit(await modal(), null);
+        await view.leaf.setViewState({type: 'markdown', state: {file: prototype, mode: 'preview'}});
+        await wait(() => view.getMode() === 'preview', 'prototype Reading View');
+        const previewMenu = fakeMenu();
+        app.workspace.trigger('editor-menu', previewMenu, view.editor, view);
+        assert.equal(previewMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const previewList = await picker();
+        assert.equal(previewList.querySelectorAll('button').length, 1);
+        previewList.querySelector('button').click();
+        submit(await modal(), null);
+        receipt.menuPrototype.push({mode: 'Reading View', editorMenu: 'UNSUPPORTED: preview mode is excluded from editor menus', activeEditorPresent: !!app.workspace.activeEditor, nativeRightClick: 'NOT RUN'});
+        save();
+      });
+      await step('Registered file menus edit images and records, with no items on unrelated targets', async () => {
+        const png = record('sample.png');
+        for (const filePath of [png.imagePath, png.recordPath]) {
+          const menu = fakeMenu();
+          app.workspace.trigger('file-menu', menu, app.vault.getAbstractFileByPath(filePath), 'file-explorer');
+          const actions = menu.entries.filter(entry => entry.title === 'Edit image description');
+          assert.equal(actions.length, 1);
+          await open(other);
+          const completed = actions[0].click();
+          const input = await modal();
+          assert.equal(input.value, record('sample.png').description);
+          submit(input, filePath === png.recordPath ? 'Menu-edited PNG.' : null);
+          await completed;
+        }
+        await wait(() => synchronized('sample.png', 'Menu-edited PNG.'), 'menu caption persistence');
+        verifyRecord(record('sample.png'));
+        for (const filePath of [source, 'fixtures/sample.png', 'images']) {
+          const menu = fakeMenu();
+          app.workspace.trigger('file-menu', menu, app.vault.getAbstractFileByPath(filePath), 'file-explorer');
+          assert.equal(menu.entries.some(entry => entry.title === 'Edit image description'), false, filePath);
+        }
+        const view = await open('Menu-prototype.md');
+        await view.leaf.setViewState({type: 'markdown', state: {file: 'Menu-prototype.md', mode: 'source', source: true}});
+        view.editor.setCursor({line: 0, ch: 2});
+        const textMenu = fakeMenu();
+        app.workspace.trigger('editor-menu', textMenu, view.editor, view);
+        assert.equal(textMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+      });
+      await step('Note-first picker shows thumbnails and selects its image', async () => {
+        const view = await open(other);
+        view.editor.setCursor({line: 0, ch: 0});
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const list = await picker();
+        const buttons = [...list.querySelectorAll('button')];
+        assert.equal(buttons.length, 1, 'Picker must only list this note’s images');
+        assert.ok(buttons[0].textContent.includes(record('sample-exif.jpg').id));
+        assert.ok(buttons[0].textContent.includes(other));
+        assert.ok(buttons[0].querySelector('img')?.src);
+        buttons[0].click();
+        const input = await modal();
+        assert.equal(input.value, record('sample-exif.jpg').description);
+        submit(input, null);
+      });
+      await step('All-image picker sorts newest first and searches notes, IDs and descriptions', async () => {
+        await app.vault.create('No-images.md', '# Empty synthetic note\n');
+        const view = await open('No-images.md');
+        view.editor.setCursor({line: 0, ch: 0});
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const list = await picker();
+        assert.equal(list.querySelectorAll('button').length, 2);
+        assert.ok(list.querySelector('button').textContent.includes(record('sample.png').id));
+        const input = list.closest('.modal').querySelector('input[aria-label="Search images"]');
+        for (const search of [other.toUpperCase(), record('sample-exif.jpg').id, record('sample-exif.jpg').description]) {
+          input.value = search;
+          input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', {bubbles: true}));
+          assert.equal(list.querySelectorAll('button').length, 1);
+          assert.ok(list.querySelector('button').textContent.includes(record('sample-exif.jpg').id));
+        }
+        list.querySelector('button').click();
+        submit(await modal(), null);
+      });
+      await step('Picker distinguishes identical descriptions and reports its result cap', async () => {
+        await open('No-images.md');
+        const store = plugin().library.store;
+        const allRecords = store.allRecords;
+        const png = record('sample.png');
+        const samples = Array.from({length: 101}, (_, index) => ({
+          ...png,
+          id: index.toString(16).padStart(12, '0'),
+          description: 'Description pending',
+          sourceNotes: [`Synthetic-${index}.md`],
+          importedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        }));
+        try {
+          store.allRecords = () => samples;
+          assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+          const list = await picker();
+          const container = list.closest('.modal');
+          assert.equal(list.querySelectorAll('button').length, 100);
+          assert.ok(container.textContent.includes('Showing 100 of 101'));
+          assert.ok(list.querySelector('button').textContent.includes('Synthetic-100.md'));
+          assert.equal(new Set([...list.querySelectorAll('button')].map(button => button.textContent)).size, 100);
+          const input = container.querySelector('input[aria-label="Search images"]');
+          input.value = 'Synthetic-0.md';
+          input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', {bubbles: true}));
+          assert.equal(list.querySelectorAll('button').length, 1, 'Search must reach results beyond the cap');
+          assert.ok(container.textContent.includes('Showing 1 of 1'));
+          list.querySelector('button').click();
+          submit(await modal(), null);
+        } finally {
+          store.allRecords = allRecords;
+        }
       });
       await step('Closed capture editor appends to the original saved note', async () => {
         const closedSource = 'Closed-editor.md';

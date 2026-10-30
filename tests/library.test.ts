@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { App, Editor, EditorPosition, TFile } from 'obsidian';
+import type { App, Editor, EditorPosition, MarkdownView, Menu, MenuItem, TFile } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { CaptureWorkflow } from '../src/captures';
 import type { ImageRecord } from '../src/images/model';
@@ -8,10 +8,37 @@ import type { RecordOperation } from '../src/images/operations';
 import { parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/images/records';
 import type { VaultIO } from '../src/images/store';
 import { DEFAULTS } from '../src/settings';
-import { PNG } from './fixtures';
+import { JPEG, PNG } from './fixtures';
 import { loadHostModules } from './host-modules';
 
 const host = await loadHostModules();
+
+function fakeMenu() {
+  const entries: {title: string; icon: string; click: () => unknown}[] = [];
+  const menu = {
+    addItem(build: (item: MenuItem) => unknown) {
+      const entry = {title: '', icon: '', click: (): unknown => undefined};
+      const item = {
+        setTitle(title: string) {
+          entry.title = title;
+          return this;
+        },
+        setIcon(icon: string) {
+          entry.icon = icon;
+          return this;
+        },
+        onClick(click: () => unknown) {
+          entry.click = click;
+          return this;
+        },
+      };
+      build(item as unknown as MenuItem);
+      entries.push(entry);
+      return this;
+    },
+  } as unknown as Menu;
+  return {menu, entries};
+}
 
 function fixture(persisted = {
   text: new Map<string, string>(),
@@ -78,7 +105,14 @@ function fixture(persisted = {
       process: (file: TFile, update: (value: string) => string) => io.process(file.path, update),
       adapter: {exists: io.exists},
     },
-    workspace: {getLeavesOfType: () => leaves, openLinkText: async () => {}, getActiveFile: () => activeFile},
+    workspace: {
+      getLeavesOfType: () => leaves,
+      openLinkText: async () => {},
+      getActiveFile: () => activeFile,
+      get activeEditor() {
+        return leaves.find(leaf => (leaf.view as {file: TFile}).file === activeFile)?.view;
+      },
+    },
   } as unknown as App;
   const errors: unknown[] = [];
   const store = new host.MediaStore(io);
@@ -90,10 +124,14 @@ function fixture(persisted = {
   const drain = (captures: CaptureWorkflow) => new Promise<void>(resolve => captures.enqueue(async () => { resolve(); }));
   const openEditor = (path: string) => {
     let content = text.get(path)!;
+    let cursor = {line: 0, ch: 0};
     const offset = (position: EditorPosition) => content.split('\n').slice(0, position.line)
       .reduce((total, line) => total + line.length + 1, 0) + position.ch;
     const editor = {
       getValue: () => content,
+      getCursor: () => cursor,
+      setCursor: (position: EditorPosition) => { cursor = position; },
+      posToOffset: offset,
       offsetToPos: (index: number) => {
         const lines = content.slice(0, index).split('\n');
         return {line: lines.length - 1, ch: lines.at(-1)!.length};
@@ -106,9 +144,139 @@ function fixture(persisted = {
       },
     };
     leaves.push({view: {file: files.get(path), editor, save: () => io.write(path, content)}});
+    return editor;
   };
   return {io, text, files, leaves, store, notes, library, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
 }
+
+test('description command resolves the live editor target and scopes its fallback picker by actual embeds', async () => {
+  const f = fixture();
+  await f.library.ready();
+  await f.io.write('Original.md', '# Note\n');
+  const png = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md')), 'Same description');
+  const jpeg = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: JPEG, method: 'file'}, 'Original.md')), 'Same description');
+  const editor = f.openEditor('Original.md');
+  f.activate('Original.md');
+  const embed = `![Custom label](images/${png.id}.png)`;
+  editor.transaction({changes: [{from: {line: 1, ch: 0}, to: {line: 1, ch: 0}, text: `${embed}\n${embed}`}]});
+  editor.setCursor({line: 2, ch: 4});
+  let selected: ImageRecord | undefined;
+  const describe = async (record: ImageRecord) => {
+    selected = record;
+    return null;
+  };
+  const open = host.RecordPicker.prototype.open;
+  const choices: ImageRecord[][] = [];
+  host.RecordPicker.prototype.open = function() {
+    choices.push((this as unknown as {records: ImageRecord[]}).records);
+  };
+  try {
+    await f.library.editDescription(describe);
+    assert.equal(selected?.id, png.id);
+    assert.equal(choices.length, 0, 'Cursor match must bypass the picker');
+    assert.equal(f.text.get('Original.md'), '# Note\n', 'Lookup must use unsaved editor content');
+    editor.setCursor({line: 0, ch: 0});
+    await f.library.editDescription(describe);
+    assert.deepEqual(choices.at(-1)?.map(record => record.id), [png.id], 'Only actual embeds, deduplicated');
+    await f.io.write('Empty.md', '# No images\n');
+    f.activate('Empty.md');
+    await f.library.editDescription(describe);
+    assert.deepEqual(new Set(choices.at(-1)?.map(record => record.id)), new Set([png.id, jpeg.id]));
+    await f.io.write('Reading.md', embed);
+    f.activate('Reading.md');
+    await f.library.editDescription(describe);
+    assert.deepEqual(choices.at(-1)?.map(record => record.id), [png.id], 'Saved notes work without an editor');
+    f.activate('Original.md');
+    Object.assign(f.leaves[0].view as object, {getMode: () => 'preview'});
+    editor.setCursor({line: 2, ch: 4});
+    await f.library.editDescription(describe);
+    assert.equal(choices.at(-1)?.length, 2, 'Reading View must ignore its retained editor and use the saved note');
+    assert.deepEqual(f.errors, []);
+  } finally {
+    host.RecordPicker.prototype.open = open;
+  }
+});
+
+test('editor and file menus add only the implemented action for managed images and records', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const sample = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md')), 'Original');
+  const embed = `![Photo [draft]](./${sample.imagePath})`;
+  const text = `Prose\n${embed}\n\`${embed}\`\n![Unmanaged](fixtures/sample.png)`;
+  await f.io.write('Original.md', text);
+  const editor = f.openEditor('Original.md');
+  const info = f.leaves[0].view as MarkdownView;
+  const describe = async () => null;
+  editor.setCursor({line: 1, ch: 5});
+  const image = new host.TFile();
+  image.path = sample.imagePath;
+  for (const build of [
+    (menu: Menu) => f.library.addEditorMenu(menu, editor as unknown as Editor, info, describe),
+    (menu: Menu) => f.library.addFileMenu(menu, image, describe),
+    (menu: Menu) => f.library.addFileMenu(menu, f.files.get(sample.recordPath)!, describe),
+  ]) {
+    const menu = fakeMenu();
+    build(menu.menu);
+    assert.deepEqual(menu.entries.map(entry => [entry.title, entry.icon]), [['Edit image description', 'pencil']]);
+  }
+  for (const line of [0, 2, 3]) {
+    editor.setCursor({line, ch: 3});
+    const menu = fakeMenu();
+    f.library.addEditorMenu(menu.menu, editor as unknown as Editor, info, describe);
+    assert.deepEqual(menu.entries, []);
+  }
+  editor.setCursor({line: 1, ch: 5});
+  const readingMenu = fakeMenu();
+  f.library.addEditorMenu(readingMenu.menu, editor as unknown as Editor, {...info, getMode: () => 'preview'}, describe);
+  assert.deepEqual(readingMenu.entries, []);
+  for (const file of [f.files.get('Original.md')!, Object.assign(new host.TFile(), {path: 'unmanaged.png'}), {path: 'images'} as TFile]) {
+    const menu = fakeMenu();
+    f.library.addFileMenu(menu.menu, file, describe);
+    assert.deepEqual(menu.entries, []);
+  }
+});
+
+test('menu actions keep their image identity, refresh the description and use the shared save path', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const sample = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md')), 'Original');
+  await f.io.write('Original.md', `![Original](${sample.imagePath})`);
+  const editor = f.openEditor('Original.md');
+  editor.setCursor({line: 0, ch: 3});
+  const menu = fakeMenu();
+  f.library.addEditorMenu(menu.menu, editor as unknown as Editor, f.leaves[0].view as MarkdownView, async record => {
+    assert.equal(record.id, sample.id);
+    assert.equal(record.description, 'Newer description');
+    return 'Menu description';
+  });
+  await f.store.setDescription(sample, 'Newer description', (previous, next, journal) => f.notes.updateEmbeds(previous, next, journal));
+  await f.io.write('Other.md', '# Other sentinel');
+  f.activate('Other.md');
+  editor.setCursor({line: 0, ch: 0});
+  await menu.entries[0].click();
+  assert.equal(parseRecord(f.text.get(sample.recordPath)!)?.description, 'Menu description');
+  assert.match(f.text.get(sample.sidecarPath)!, /Menu description/);
+  assert.equal(f.text.get('Original.md'), `![Menu description](${sample.imagePath})`);
+  assert.equal(f.text.get('Other.md'), '# Other sentinel');
+  assert.deepEqual(f.errors, []);
+});
+
+test('menu actions report a removed record without opening a different image or a picker', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const sample = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md')), 'Original');
+  let described = false;
+  const menu = fakeMenu();
+  f.library.addFileMenu(menu.menu, f.files.get(sample.recordPath)!, async () => {
+    described = true;
+    return 'Wrong edit';
+  });
+  await f.io.remove(sample.recordPath);
+  await menu.entries[0].click();
+  assert.equal(described, false);
+  assert.equal(f.errors.length, 1);
+  assert.match(String(f.errors[0]), /no longer available/);
+});
 
 for (const missing of [false, true]) {
   test(`closed capture editor ${missing ? 'retains staging when its note is missing' : 'appends to its original note before clearing staging'}`, async () => {

@@ -13,6 +13,7 @@
     "test:obsidian": "node --import tsx scripts/obsidian-smoke.ts"
   },
   "dependencies": {
+    "@lezer/markdown": "^1.8.1",
     "exifr": "7.1.3"
   },
   "devDependencies": {

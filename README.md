@@ -25,6 +25,10 @@ To update, replace those three files with a new build and reload the plugin.
 
 Choose **Describe later** to keep the image without finishing its description. Run **Image Ledger: Edit image description** later, or edit `description` in the library. This updates generated image descriptions in your notes; custom alt text stays as you wrote it.
 
+In an editor, place the cursor inside a managed image's Markdown embed and run **Edit image description** to edit it directly. Elsewhere in the note, the command lists that note's images; if there are none, it lists all images. An open image or image record still opens its description directly. The picker shows thumbnails, source notes and IDs, newest imports first. Search by description, ID or note; the count shows when only the first 100 matches are displayed.
+
+**Edit image description** is also added to file menus for managed images and their record notes. Source and Live Preview editor menus include it when the editor selection is inside a managed Markdown image embed. Ordinary text and unmanaged images get no added item. Reading View has no editor-menu integration; use the command or the image/record file menu. Native right-click delivery and targeting on rendered images remain unverified; current checks invoke the menu handlers through Obsidian's API. Wiki and reference-style embeds are not supported by cursor lookup.
+
 Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace.
 
 ## Where your images go
@@ -51,4 +55,4 @@ For development and testing, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE). Bundled EXIF parsing uses the MIT-licensed [exifr](https://github.com/MikeKovarik/exifr) library.
+[MIT](LICENSE). Bundled EXIF parsing uses [exifr](https://github.com/MikeKovarik/exifr); Markdown lookup uses [Lezer](https://code.haverbeke.berlin/lezer/markdown). Both are MIT-licensed.

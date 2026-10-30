@@ -1,6 +1,7 @@
 import type { ImageRecord } from './model';
 import type { EmbedRange } from './operations';
-import { markdownEmbed } from './records';
+import { posix } from 'node:path';
+import { parser } from '@lezer/markdown';
 
 export interface ManagedImageEmbed extends EmbedRange {
   record: ImageRecord;
@@ -21,14 +22,33 @@ export function imageTargetPattern(embed: string): string {
 /** Match managed destinations relative to this note, independent of their alt text. */
 export function managedImageEmbeds(text: string, sourcePath: string, records: ImageRecord[]): ManagedImageEmbed[] {
   const embeds: ManagedImageEmbed[] = [];
-  for (const record of records) {
-    const target = imageTargetPattern(markdownEmbed(record, sourcePath));
-    const pattern = new RegExp(`!\\[(?:\\\\.|[^\\]\\\\\\n])*\\]\\(${target}\\)`, 'g');
-    for (const match of text.matchAll(pattern)) {
-      embeds.push({from: match.index, to: match.index + match[0].length, record});
-    }
+  const byPath = new Map(records.map(record => [record.imagePath, record]));
+  const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
+  const from = frontmatter?.[0].length ?? 0;
+  parser.parse(text.slice(from)).iterate({
+    enter(node) {
+      if (node.name !== 'Image') return;
+      // shortcut: inline Markdown destinations only; add reference/wiki resolution when those formats are supported.
+      const url = node.node.getChild('URL');
+      const target = url && resolveImageTarget(text.slice(from + url.from, from + url.to), sourcePath);
+      const record = target ? byPath.get(target) : undefined;
+      if (record) embeds.push({from: from + node.from, to: from + node.to, record});
+      // Images nested inside alt text are labels, not independently displayed images.
+      return false;
+    },
+  });
+  return embeds;
+}
+
+function resolveImageTarget(target: string, sourcePath: string): string | undefined {
+  if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1);
+  target = target.replace(/\\([!-/:-@\[-`{-~])/g, '$1');
+  if (/^(?:[a-z][a-z\d+.-]*:|\/)/i.test(target)) return;
+  try {
+    return posix.normalize(posix.join(posix.dirname(sourcePath), decodeURIComponent(target)));
+  } catch {
+    return undefined;
   }
-  return embeds.sort((left, right) => left.from - right.from);
 }
 
 /** A selection must stay inside one embed; a caret uses an exclusive end offset. */

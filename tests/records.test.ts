@@ -78,6 +78,51 @@ test('managed image lookup ignores Image details links, unmanaged targets and su
   assert.equal(findManagedImage(text, source, [record], text.indexOf('Image details')), undefined);
 });
 
+test('managed image lookup excludes code, escaped markers, comments and frontmatter', () => {
+  const record = fixture();
+  const source = record.sourceNotes[0];
+  const embed = markdownEmbed(record, source);
+  for (const text of [
+    `\`${embed}\``,
+    `\`\`\`md\n${embed}\n\`\`\``,
+    `~~~\n${embed}\n~~~`,
+    `    ${embed}`,
+    `\\${embed}`,
+    `<!-- ${embed} -->`,
+    `---\nexample: '${embed}'\n---\n`,
+  ]) {
+    assert.deepEqual(managedImageEmbeds(text, source, [record]), [], text);
+    assert.equal(findManagedImage(text, source, [record], text.indexOf('![') + 2), undefined);
+  }
+  const text = `---\nexample: '${embed}'\n---\n${embed}`;
+  assert.equal(managedImageEmbeds(text, source, [record])[0]?.from, text.lastIndexOf('!['));
+});
+
+test('managed image lookup resolves equivalent paths and balanced custom alt text', () => {
+  const record = fixture({imagePath: 'images/Photo (draft).jpg'});
+  const source = 'Notes/Today.md';
+  for (const target of [
+    '../images/Photo%20%28draft%29.jpg',
+    '../images/./Photo%20(draft).jpg',
+    '../images/unused/../Photo%20%28draft%29.jpg',
+    '<../images/Photo (draft).jpg>',
+    '../images/Photo%20\\(draft\\).jpg "Optional title"',
+  ]) {
+    const text = `Before ![Photo [draft]](${target}) after`;
+    assert.equal(findManagedImage(text, source, [record], 10)?.record, record, target);
+  }
+  for (const target of ['https://example.test/images/Photo%20(draft).jpg', '//example.test/a.jpg', '../images/Photo%ZZ.jpg']) {
+    assert.deepEqual(managedImageEmbeds(`![Photo](${target})`, source, [record]), []);
+  }
+});
+
+test('managed image lookup does not select nested images inside alt text', () => {
+  const outer = fixture({imagePath: 'images/outer.jpg'});
+  const inner = fixture({id: 'abcdef123456', imagePath: 'images/inner.jpg'});
+  const text = '![Outer ![Inner](images/inner.jpg)](images/outer.jpg)';
+  assert.deepEqual(managedImageEmbeds(text, 'Note.md', [outer, inner]).map(embed => embed.record.id), [outer.id]);
+});
+
 test('portable record round trips every field, preserving raw metadata', () => {
   const record = fixture();
   assert.deepEqual(parseRecord(serializeRecord(record)), record);

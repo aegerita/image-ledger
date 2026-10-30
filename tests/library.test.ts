@@ -8,7 +8,7 @@ import type { RecordOperation } from '../src/images/operations';
 import { parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/images/records';
 import type { VaultIO } from '../src/images/store';
 import { DEFAULTS } from '../src/settings';
-import { PNG } from './fixtures';
+import { JPEG, PNG } from './fixtures';
 import { loadHostModules } from './host-modules';
 
 const host = await loadHostModules();
@@ -78,7 +78,14 @@ function fixture(persisted = {
       process: (file: TFile, update: (value: string) => string) => io.process(file.path, update),
       adapter: {exists: io.exists},
     },
-    workspace: {getLeavesOfType: () => leaves, openLinkText: async () => {}, getActiveFile: () => activeFile},
+    workspace: {
+      getLeavesOfType: () => leaves,
+      openLinkText: async () => {},
+      getActiveFile: () => activeFile,
+      get activeEditor() {
+        return leaves.find(leaf => (leaf.view as {file: TFile}).file === activeFile)?.view;
+      },
+    },
   } as unknown as App;
   const errors: unknown[] = [];
   const store = new host.MediaStore(io);
@@ -90,10 +97,14 @@ function fixture(persisted = {
   const drain = (captures: CaptureWorkflow) => new Promise<void>(resolve => captures.enqueue(async () => { resolve(); }));
   const openEditor = (path: string) => {
     let content = text.get(path)!;
+    let cursor = {line: 0, ch: 0};
     const offset = (position: EditorPosition) => content.split('\n').slice(0, position.line)
       .reduce((total, line) => total + line.length + 1, 0) + position.ch;
     const editor = {
       getValue: () => content,
+      getCursor: () => cursor,
+      setCursor: (position: EditorPosition) => { cursor = position; },
+      posToOffset: offset,
       offsetToPos: (index: number) => {
         const lines = content.slice(0, index).split('\n');
         return {line: lines.length - 1, ch: lines.at(-1)!.length};
@@ -106,9 +117,53 @@ function fixture(persisted = {
       },
     };
     leaves.push({view: {file: files.get(path), editor, save: () => io.write(path, content)}});
+    return editor;
   };
   return {io, text, files, leaves, store, notes, library, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
 }
+
+test('description command resolves the live editor target and scopes its fallback picker by actual embeds', async () => {
+  const f = fixture();
+  await f.library.ready();
+  await f.io.write('Original.md', '# Note\n');
+  const png = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md')), 'Same description');
+  const jpeg = await f.store.describe(await f.store.prepare(await f.store.stage({bytes: JPEG, method: 'file'}, 'Original.md')), 'Same description');
+  const editor = f.openEditor('Original.md');
+  f.activate('Original.md');
+  const embed = `![Custom label](images/${png.id}.png)`;
+  editor.transaction({changes: [{from: {line: 1, ch: 0}, to: {line: 1, ch: 0}, text: `${embed}\n${embed}`}]});
+  editor.setCursor({line: 2, ch: 4});
+  let selected: ImageRecord | undefined;
+  const describe = async (record: ImageRecord) => {
+    selected = record;
+    return null;
+  };
+  const open = host.RecordPicker.prototype.open;
+  const choices: ImageRecord[][] = [];
+  host.RecordPicker.prototype.open = function() {
+    choices.push((this as unknown as {records: ImageRecord[]}).records);
+  };
+  try {
+    await f.library.editDescription(describe);
+    assert.equal(selected?.id, png.id);
+    assert.equal(choices.length, 0, 'Cursor match must bypass the picker');
+    assert.equal(f.text.get('Original.md'), '# Note\n', 'Lookup must use unsaved editor content');
+    editor.setCursor({line: 0, ch: 0});
+    await f.library.editDescription(describe);
+    assert.deepEqual(choices.at(-1)?.map(record => record.id), [png.id], 'Only actual embeds, deduplicated');
+    await f.io.write('Empty.md', '# No images\n');
+    f.activate('Empty.md');
+    await f.library.editDescription(describe);
+    assert.deepEqual(new Set(choices.at(-1)?.map(record => record.id)), new Set([png.id, jpeg.id]));
+    await f.io.write('Reading.md', embed);
+    f.activate('Reading.md');
+    await f.library.editDescription(describe);
+    assert.deepEqual(choices.at(-1)?.map(record => record.id), [png.id], 'Saved notes work without an editor');
+    assert.deepEqual(f.errors, []);
+  } finally {
+    host.RecordPicker.prototype.open = open;
+  }
+});
 
 for (const missing of [false, true]) {
   test(`closed capture editor ${missing ? 'retains staging when its note is missing' : 'appends to its original note before clearing staging'}`, async () => {

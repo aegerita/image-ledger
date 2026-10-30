@@ -4,6 +4,7 @@ import type { Extension } from '@codemirror/state';
 import { randomUUID } from 'node:crypto';
 import { addAnchor, insertionAnchors, removeAnchor } from './anchors';
 import { markdownEmbed } from '../images/records';
+import { escapePattern, imageTargetPattern } from '../images/embeds';
 import type { ImageRecord } from '../images/model';
 import type { NoteProjection, ProjectionJournal } from '../images/operations';
 import type { Settings } from '../settings';
@@ -233,16 +234,4 @@ export class NoteImages {
 
 function noteProjectionConflict(sourcePath: string): Error {
   return new Error(`A source note changed during the description save or no longer exists: ${sourcePath}. Its text and the unfinished save receipt were preserved.`);
-}
-
-function escapePattern(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function imageTargetPattern(embed: string): string {
-  const target = embed.slice(embed.lastIndexOf('](') + 2, -1);
-  // Existing generated destinations can contain literal parentheses; alt text must stay exact.
-  return escapePattern(target)
-    .replace(/%28/g, '(?:%28|\\()')
-    .replace(/%29/g, '(?:%29|\\))');
 }

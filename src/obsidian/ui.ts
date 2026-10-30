@@ -74,16 +74,26 @@ export class RecordPicker extends Modal {
     this.titleEl.setText('Choose an image');
     const input = this.contentEl.createEl('input', {
       type: 'search',
-      attr: {placeholder: 'Search descriptions or image IDs', 'aria-label': 'Search images'},
+      attr: {placeholder: 'Search descriptions, image IDs or notes', 'aria-label': 'Search images'},
     });
+    const count = this.contentEl.createEl('p', {attr: {'aria-live': 'polite'}});
     const results = this.contentEl.createDiv({cls: 'image-ledger-picker'});
+    const records = [...this.records].sort((left, right) => Date.parse(right.importedAt) - Date.parse(left.importedAt));
     const render = () => {
       results.empty();
       const search = input.value.toLocaleLowerCase();
-      const matches = this.records.filter(record =>
-        `${record.description} ${record.id}`.toLocaleLowerCase().includes(search));
+      const matches = records.filter(record =>
+        `${record.description} ${record.id} ${record.sourceNotes.join(' ')}`.toLocaleLowerCase().includes(search));
+      count.setText(`Showing ${Math.min(matches.length, 100)} of ${matches.length}`);
       for (const record of matches.slice(0, 100)) {
-        const button = results.createEl('button', {text: record.description});
+        const button = results.createEl('button');
+        const image = this.app.vault.getAbstractFileByPath(record.imagePath);
+        if (image instanceof TFile) {
+          button.createEl('img', {attr: {src: this.app.vault.getResourcePath(image), alt: '', loading: 'lazy'}});
+        }
+        const label = button.createSpan();
+        label.createSpan({text: record.description, cls: 'image-ledger-picker-description'});
+        label.createEl('small', {text: `${record.sourceNotes.join(', ') || 'No source note'} · ${record.id}`});
         button.addEventListener('click', () => {
           this.close();
           this.choose(record);

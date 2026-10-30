@@ -317,6 +317,86 @@ module.exports = async (app, config) => {
         await wait(() => synchronized('sample.png', 'Synthetic PNG.'), 'caption command persistence');
         assert.equal(verifyRecord(record('sample.png')).captionStatus, 'confirmed');
       });
+      await step('Cursor-directed description command in a source note', async () => {
+        const view = await open(source);
+        const png = record('sample.png');
+        const offset = view.editor.getValue().indexOf(embed(png, source));
+        assert.ok(offset >= 0);
+        view.editor.setCursor(view.editor.offsetToPos(offset + 3));
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const input = await modal();
+        assert.equal(input.value, 'Synthetic PNG.');
+        assert.equal(documents().some(doc => doc.querySelector('.image-ledger-picker')), false, 'Cursor match opened a picker');
+        submit(input, 'Cursor-edited PNG.');
+        await wait(() => synchronized('sample.png', 'Cursor-edited PNG.'), 'cursor caption persistence');
+        verifyRecord(record('sample.png'));
+      });
+      const picker = () => wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.image-ledger-picker')])[0], 'image picker');
+      await step('Note-first picker shows thumbnails and selects its image', async () => {
+        const view = await open(other);
+        view.editor.setCursor({line: 0, ch: 0});
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const list = await picker();
+        const buttons = [...list.querySelectorAll('button')];
+        assert.equal(buttons.length, 1, 'Picker must only list this note’s images');
+        assert.ok(buttons[0].textContent.includes(record('sample-exif.jpg').id));
+        assert.ok(buttons[0].textContent.includes(other));
+        assert.ok(buttons[0].querySelector('img')?.src);
+        buttons[0].click();
+        const input = await modal();
+        assert.equal(input.value, record('sample-exif.jpg').description);
+        submit(input, null);
+      });
+      await step('All-image picker sorts newest first and searches notes, IDs and descriptions', async () => {
+        await app.vault.create('No-images.md', '# Empty synthetic note\n');
+        const view = await open('No-images.md');
+        view.editor.setCursor({line: 0, ch: 0});
+        assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+        const list = await picker();
+        assert.equal(list.querySelectorAll('button').length, 2);
+        assert.ok(list.querySelector('button').textContent.includes(record('sample.png').id));
+        const input = list.closest('.modal').querySelector('input[aria-label="Search images"]');
+        for (const search of [other.toUpperCase(), record('sample-exif.jpg').id, record('sample-exif.jpg').description]) {
+          input.value = search;
+          input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', {bubbles: true}));
+          assert.equal(list.querySelectorAll('button').length, 1);
+          assert.ok(list.querySelector('button').textContent.includes(record('sample-exif.jpg').id));
+        }
+        list.querySelector('button').click();
+        submit(await modal(), null);
+      });
+      await step('Picker distinguishes identical descriptions and reports its result cap', async () => {
+        await open('No-images.md');
+        const store = plugin().library.store;
+        const allRecords = store.allRecords;
+        const png = record('sample.png');
+        const samples = Array.from({length: 101}, (_, index) => ({
+          ...png,
+          id: index.toString(16).padStart(12, '0'),
+          description: 'Description pending',
+          sourceNotes: [`Synthetic-${index}.md`],
+          importedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        }));
+        try {
+          store.allRecords = () => samples;
+          assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
+          const list = await picker();
+          const container = list.closest('.modal');
+          assert.equal(list.querySelectorAll('button').length, 100);
+          assert.ok(container.textContent.includes('Showing 100 of 101'));
+          assert.ok(list.querySelector('button').textContent.includes('Synthetic-100.md'));
+          assert.equal(new Set([...list.querySelectorAll('button')].map(button => button.textContent)).size, 100);
+          const input = container.querySelector('input[aria-label="Search images"]');
+          input.value = 'Synthetic-0.md';
+          input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', {bubbles: true}));
+          assert.equal(list.querySelectorAll('button').length, 1, 'Search must reach results beyond the cap');
+          assert.ok(container.textContent.includes('Showing 1 of 1'));
+          list.querySelector('button').click();
+          submit(await modal(), null);
+        } finally {
+          store.allRecords = allRecords;
+        }
+      });
       await step('Closed capture editor appends to the original saved note', async () => {
         const closedSource = 'Closed-editor.md';
         await app.vault.create(closedSource, '# Closed editor sentinel\n');

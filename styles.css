@@ -2,4 +2,8 @@
 .image-ledger-description input, .image-ledger-picker { width: 100%; }
 .image-ledger-validation { color: var(--text-error); min-height: 1.5em; margin-top: .4rem; }
 .image-ledger-picker { display: grid; gap: .5rem; max-height: 400px; overflow: auto; margin-top: 1rem; }
-.image-ledger-picker button { text-align: left; white-space: normal; height: auto; padding: .7rem; }
+.image-ledger-picker button { display: flex; gap: .7rem; text-align: left; white-space: normal; height: auto; padding: .7rem; }
+.image-ledger-picker img { width: 64px; height: 48px; object-fit: contain; flex-shrink: 0; }
+.image-ledger-picker button > span { min-width: 0; overflow-wrap: anywhere; }
+.image-ledger-picker-description { display: block; }
+.image-ledger-picker small { color: var(--text-muted); }

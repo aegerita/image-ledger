@@ -19,7 +19,7 @@ npm test
 | --- | --- |
 | `src/main.ts` | Plugin startup, commands, and event registration. |
 | `src/captures.ts` | Capture batches, description prompts, and recovery on one shared queue. |
-| `src/images/` | Image model, byte validation/metadata, record formats, and queued record mutations. No Obsidian imports. |
+| `src/images/` | Image model, byte validation/metadata, record formats, managed embed lookup, and queued record mutations. No Obsidian imports. |
 | `src/obsidian/notes.ts` | Editor tracking, insertion positions, and image embeds in notes. |
 | `src/obsidian/library.ts` | Record initialization, description synchronization, renames, and audits. |
 | `src/obsidian/ui.ts` | Description dialog, image picker, and settings tab. |

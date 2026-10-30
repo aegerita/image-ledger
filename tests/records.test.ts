@@ -3,6 +3,7 @@ import test from 'node:test';
 import { BASE_CONTENT, markdownEmbed, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from '../src/images/records';
 import type { ImageRecord } from '../src/images/model';
 import { createImageId, isImageId, isLegacyImageId } from '../src/images/ids';
+import { findManagedImage, managedImageEmbeds } from '../src/images/embeds';
 
 const id = '91d1699d-f733-45a9-905c-f630cc2e5426';
 function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
@@ -37,6 +38,45 @@ function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
     ...overrides,
   };
 }
+
+test('managed image lookup finds embeds at the start, middle and end of a line', () => {
+  const record = fixture();
+  const source = record.sourceNotes[0];
+  const embed = markdownEmbed(record, source);
+  for (const [before, after] of [['', ' tail'], ['head ', ' tail'], ['head ', '']]) {
+    const text = before + embed + after;
+    for (const offset of [before.length, before.length + 4, before.length + embed.length - 1]) {
+      assert.deepEqual(findManagedImage(text, source, [record], offset), {
+        from: before.length, to: before.length + embed.length, record,
+      });
+    }
+    assert.equal(findManagedImage(text, source, [record], before.length + embed.length), undefined);
+  }
+});
+
+test('managed image lookup uses target paths with custom alt text and both parenthesis encodings', () => {
+  const record = fixture({imagePath: 'Photos %28literal%29 (draft)/images/a.jpg'});
+  const other = fixture({id: 'abcdef123456', imagePath: 'images/other.jpg'});
+  const source = 'Notes/Today.md';
+  const canonical = markdownEmbed({...record, description: 'Custom [alt] with \\ slash'}, source);
+  for (const embed of [canonical, canonical.replace(/%28draft%29/, '(draft)')]) {
+    const text = `${embed}\n${markdownEmbed(other, source)}\n${embed}`;
+    const matches = managedImageEmbeds(text, source, [record, other]);
+    assert.deepEqual(matches.map(match => match.record), [record, other, record]);
+    assert.equal(findManagedImage(text, source, [record, other], text.length - 1)?.record, record);
+    assert.equal(findManagedImage(text, source, [record, other], {from: 0, to: embed.length})?.record, record);
+    assert.equal(findManagedImage(text, source, [record, other], {from: 0, to: text.length}), undefined);
+  }
+});
+
+test('managed image lookup ignores Image details links, unmanaged targets and surrounding prose', () => {
+  const record = fixture();
+  const source = record.sourceNotes[0];
+  const text = `Prose\n${markdownEmbed(record, source)}\n\n${markdownEmbed({...record, imagePath: record.recordPath, description: 'Image details'}, source).slice(1)}\n![Same description](unmanaged.jpg)`;
+  assert.equal(managedImageEmbeds(text, source, [record]).length, 1);
+  assert.equal(findManagedImage(text, source, [record], 0), undefined);
+  assert.equal(findManagedImage(text, source, [record], text.indexOf('Image details')), undefined);
+});
 
 test('portable record round trips every field, preserving raw metadata', () => {
   const record = fixture();

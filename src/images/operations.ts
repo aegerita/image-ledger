@@ -30,6 +30,7 @@ export interface RecordOperation {
   target?: ImageRecord;
   intent: RecordIntent;
   synchronize: boolean;
+  discoveredNotes?: string[];
   notes: Record<string, NoteProjection>;
 }
 
@@ -65,6 +66,13 @@ export function parseOperation(text: string, file: string): RecordOperation {
       assertVaultPath(intent.from);
       assertVaultPath(intent.to);
     } else if (intent.kind !== 'reconcile') throw new Error();
+    if (operation.discoveredNotes !== undefined) {
+      if (!Array.isArray(operation.discoveredNotes)) throw new Error();
+      for (const source of operation.discoveredNotes) {
+        assertVaultPath(source);
+        if (!source.endsWith('.md')) throw new Error();
+      }
+    }
     if (!operation.notes || typeof operation.notes !== 'object' || Array.isArray(operation.notes)) throw new Error();
     if (!operation.synchronize && Object.keys(operation.notes).length) throw new Error();
     for (const [source, plan] of Object.entries(operation.notes)) {

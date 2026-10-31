@@ -2,6 +2,7 @@ import { Modal, PluginSettingTab, Setting, TFile, type App } from 'obsidian';
 import type ImageLedgerPlugin from '../main';
 import { normalizeDescription } from '../images/records';
 import { isStorageLayout } from '../settings';
+import type { SkippedEmbed } from './notes';
 import type { ImageRecord } from '../images/model';
 
 export class DescriptionModal extends Modal {
@@ -144,6 +145,15 @@ export class MediaSettings extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
     new Setting(containerEl)
+      .setName('Always keep alt text in sync with the description')
+      .setDesc('Overwrite customized alt text on generated-form image embeds during description saves. Off by default.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.syncCustomAlt)
+        .onChange(async value => {
+          this.plugin.settings.syncCustomAlt = value;
+          await this.plugin.saveSettings();
+        }));
+    new Setting(containerEl)
       .setName('Image storage')
       .setDesc('Choose one folder, the import year, or a year from the note name or folder. Existing images stay in place.')
       .addDropdown(dropdown => dropdown
@@ -157,5 +167,44 @@ export class MediaSettings extends PluginSettingTab {
     containerEl.createEl('p', {
       text: 'Use Image Ledger: Open image library to browse images in Bases. Disable another image-paste uploader before using this plugin.',
     });
+  }
+}
+
+export class DescriptionSaveReview extends Modal {
+  private saving = false;
+
+  constructor(app: App, private skipped: SkippedEmbed[], private overwrite: (item: SkippedEmbed) => Promise<SkippedEmbed[]>) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText('Skipped image descriptions');
+    this.render();
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    if (!this.skipped.length) this.contentEl.createEl('p', {text: 'No skipped embeds remain.'});
+    for (const item of this.skipped) {
+      const row = new Setting(this.contentEl)
+        .setName(item.path)
+        .setDesc(`${item.reason}${item.text ? ': ' + item.text : ''}`);
+      if (item.from !== undefined && item.text !== undefined) {
+        row.addButton(button => button.setButtonText('Overwrite this embed').onClick(async () => {
+          if (this.saving) return;
+          this.saving = true;
+          button.setDisabled(true);
+          try {
+            this.skipped = await this.overwrite(item);
+            this.render();
+          } catch (error) {
+            row.setDesc(String(error));
+            button.setDisabled(false);
+          } finally {
+            this.saving = false;
+          }
+        }));
+      }
+    }
   }
 }

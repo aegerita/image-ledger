@@ -3,11 +3,19 @@ import { ViewPlugin, type EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { randomUUID } from 'node:crypto';
 import { addAnchor, insertionAnchors, removeAnchor } from './anchors';
-import { markdownEmbed } from '../images/records';
-import { escapePattern, imageTargetPattern } from '../images/embeds';
+import { assertVaultPath, markdownEmbed } from '../images/records';
+import { escapePattern, imageTargetPattern, managedImageEmbeds } from '../images/embeds';
 import type { ImageRecord } from '../images/model';
 import type { NoteProjection, ProjectionJournal } from '../images/operations';
 import type { Settings } from '../settings';
+
+export interface SkippedEmbed {
+  path: string;
+  reason: string;
+  text?: string;
+  // Only single-line inline embeds have an overwrite target.
+  from?: number;
+}
 
 export interface CaptureTarget {
   readonly path: string;
@@ -19,6 +27,32 @@ export class NoteImages {
   private editors = new WeakMap<Editor, EditorView>();
 
   constructor(private app: App, private settings: Settings) {}
+
+  private saveReports = new WeakMap<ProjectionJournal, Map<string, {updated: number; skipped: SkippedEmbed[]}>>();
+
+  references(record: ImageRecord): {paths: string[]; skipped: SkippedEmbed[]} {
+    const paths: string[] = [];
+    const skipped: SkippedEmbed[] = [];
+    for (const [source, targets] of Object.entries(this.app.metadataCache?.resolvedLinks ?? {})) {
+      if (!source.endsWith('.md') || source === record.recordPath || !targets[record.imagePath]) continue;
+      try {
+        assertVaultPath(source);
+        paths.push(source);
+      } catch {
+        skipped.push({path: source, reason: 'Unsupported note path: rename the note to sync its descriptions'});
+      }
+    }
+    return {paths, skipped};
+  }
+
+  saveReport(journal: ProjectionJournal, record: ImageRecord): {updated: number; notes: number; skipped: SkippedEmbed[]} {
+    const reports = [...(this.saveReports.get(journal)?.values() ?? [])];
+    return {
+      updated: reports.reduce((sum, report) => sum + report.updated, 0),
+      notes: reports.filter(report => report.updated > 0).length,
+      skipped: [...reports.flatMap(report => report.skipped), ...this.references(record).skipped],
+    };
+  }
 
   editorExtension(): Extension {
     const editors = this.editors;
@@ -74,13 +108,21 @@ export class NoteImages {
     };
   }
 
-  async updateEmbeds(previous: ImageRecord, next: ImageRecord, journal?: ProjectionJournal): Promise<void> {
+  async updateEmbeds(previous: ImageRecord, next: ImageRecord, journal?: ProjectionJournal, overwrite?: SkippedEmbed): Promise<void> {
     const plans: Record<string, NoteProjection> = journal?.notes ?? Object.create(null);
+    let reports = journal && this.saveReports.get(journal);
+    if (journal && !reports) {
+      reports = new Map();
+      this.saveReports.set(journal, reports);
+    }
     for (const sourcePath of next.sourceNotes) {
+      const report = {updated: 0, skipped: [] as SkippedEmbed[]};
+      reports?.set(sourcePath, report);
       const existing = Object.hasOwn(plans, sourcePath) ? plans[sourcePath] : undefined;
       const file = this.sourceNote(sourcePath);
       if (!file) {
         if (existing) throw noteProjectionConflict(sourcePath);
+        report.skipped.push({path: sourcePath, reason: 'Missing source note'});
         continue;
       }
 
@@ -101,11 +143,46 @@ export class NoteImages {
         const embed = markdownEmbed(previous, sourcePath);
         const prefix = embed.slice(0, embed.lastIndexOf('](') + 2);
         const pattern = new RegExp(escapePattern(prefix) + imageTargetPattern(embed) + '\\)', 'g');
-        beforeRanges = [...before.matchAll(pattern)].map(match => ({
-          from: match.index!, to: match.index! + match[0].length,
-        }));
+        const generated = [...before.matchAll(pattern)];
+        beforeRanges = [];
+        for (const found of managedImageEmbeds(before, sourcePath, [previous], true)) {
+          const text = before.slice(found.from, found.to);
+          if (found.reference) {
+            report.skipped.push({path: sourcePath, text, reason: 'Reference-style Markdown embed: overwrite unsupported'});
+            continue;
+          }
+          const exact = generated.some(match => match.index === found.from && match[0].length === found.to - found.from);
+          const generatedForm = new RegExp('^!\\[[^\\n]*\\]\\(' + imageTargetPattern(embed) + '\\)$').test(text);
+          const chosen = overwrite?.path === sourcePath && overwrite.from === found.from && overwrite.text === text
+            && !/[\r\n]/.test(text);
+          if (exact || chosen || (this.settings.syncCustomAlt && generatedForm)) {
+            beforeRanges.push({from: found.from, to: found.to});
+          } else {
+            report.skipped.push(skippedMarkdown(sourcePath, text, found.from));
+          }
+        }
+        if (overwrite?.path === sourcePath && !beforeRanges.some(range => range.from === overwrite.from)) {
+          throw new Error('The selected embed changed. Review the current note before overwriting it.');
+        }
       }
 
+      if (existing) {
+        for (const found of managedImageEmbeds(before, sourcePath, [previous, next], true)) {
+          if (!beforeRanges.some(range => range.from === found.from && range.to === found.to)) {
+            const text = before.slice(found.from, found.to);
+            report.skipped.push(found.reference
+              ? {path: sourcePath, text, reason: 'Reference-style Markdown embed: overwrite unsupported'}
+              : skippedMarkdown(sourcePath, text, found.from));
+          }
+        }
+      }
+      for (const cached of this.app.metadataCache?.getFileCache(file)?.embeds ?? []) {
+        if (!cached.original.startsWith('![[') || !before.includes(cached.original)) continue;
+        if (this.app.metadataCache.getFirstLinkpathDest(cached.link, sourcePath)?.path === previous.imagePath) {
+          report.skipped.push({path: sourcePath, text: cached.original, reason: 'Wiki embed: no alt text'});
+        }
+      }
+      report.updated = beforeRanges.length;
       const embed = markdownEmbed(next, sourcePath);
       const plan: NoteProjection = {before, after: '', beforeRanges, ranges: []};
       let cursor = 0;
@@ -117,6 +194,12 @@ export class NoteImages {
         cursor = range.to;
       }
       plan.after += before.slice(cursor);
+      for (const skipped of report.skipped) {
+        if (skipped.from === undefined) continue;
+        const offset = skipped.from;
+        skipped.from += beforeRanges.filter(range => range.to <= offset)
+          .reduce((shift, range) => shift + embed.length - (range.to - range.from), 0);
+      }
       Object.defineProperty(plans, sourcePath, {value: plan, configurable: true, enumerable: true, writable: true});
       await journal?.checkpoint();
       await this.applyNoteProjection(sourcePath, plan);
@@ -234,4 +317,11 @@ export class NoteImages {
 
 function noteProjectionConflict(sourcePath: string): Error {
   return new Error(`A source note changed during the description save or no longer exists: ${sourcePath}. Its text and the unfinished save receipt were preserved.`);
+}
+
+function skippedMarkdown(path: string, text: string, from: number): SkippedEmbed {
+  if (/[\r\n]/.test(text)) {
+    return {path, text, reason: 'Multiline Markdown embed: overwrite unsupported'};
+  }
+  return {path, text, from, reason: 'Customized alt text or non-generated Markdown form'};
 }

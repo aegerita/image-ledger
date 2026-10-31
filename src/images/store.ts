@@ -41,7 +41,10 @@ export interface PreparedCapture {
   duplicate: boolean;
 }
 
-type SynchronizeRecord = (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => Promise<void>;
+export type SynchronizeRecord = ((previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => Promise<void>) & {
+  references?: (record: ImageRecord) => string[];
+  saved?: (record: ImageRecord, journal: ProjectionJournal) => void;
+};
 
 const STATE_DIR = '.image-ledger/staging';
 
@@ -299,10 +302,10 @@ export class MediaStore {
     });
   }
 
-  setDescription(record: ImageRecord, description: string, synchronize: SynchronizeRecord): Promise<ImageRecord> {
+  setDescription(record: ImageRecord, description: string, synchronize: SynchronizeRecord, expectedDescription?: string): Promise<ImageRecord> {
     return this.exclusive(() => {
       const recordPath = this.records.get(record.id)?.recordPath ?? record.recordPath;
-      return this.mutate(recordPath, record.id, {kind: 'description', description}, synchronize);
+      return this.mutate(recordPath, record.id, {kind: 'description', description}, synchronize, expectedDescription);
     });
   }
 
@@ -353,6 +356,7 @@ export class MediaStore {
     id: string,
     intent: RecordIntent,
     synchronize?: SynchronizeRecord,
+    expectedDescription?: string,
   ): Promise<ImageRecord> {
     if (intent.kind === 'description' && intent.description !== null) {
       intent = {...intent, description: normalizeDescription(intent.description)};
@@ -364,6 +368,9 @@ export class MediaStore {
     const baseline = parseRecord(await this.io.read(recordPath));
     if (!baseline || baseline.id !== id) {
       throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
+    }
+    if (expectedDescription !== undefined && baseline.description !== expectedDescription) {
+      throw new Error('The image description changed. Save again and review the new results.');
     }
     const operation: RecordOperation = {
       version: 1, recordPath, baseline, intent, synchronize: !!synchronize, notes: {},
@@ -434,6 +441,10 @@ export class MediaStore {
       if (next.id !== current.id) {
         throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
       }
+      if (synchronize?.references) {
+        operation.discoveredNotes = [...new Set([...(operation.discoveredNotes ?? []), ...synchronize.references(next)])];
+      }
+      next.sourceNotes = [...new Set([...next.sourceNotes, ...(operation.discoveredNotes ?? [])])];
       operation.target = next;
       await this.checkpoint(operation);
       if (operation.synchronize && synchronize) {
@@ -443,6 +454,7 @@ export class MediaStore {
       }
       if (await this.persist(next, content)) {
         await this.io.remove(operationPath(operation.baseline.id));
+        synchronize?.saved?.(next, journal);
         return next;
       }
       // Keep durable occurrence plans while rebasing the intent on newer record fields.

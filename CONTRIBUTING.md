@@ -28,7 +28,7 @@ npm test
 
 Capture flow: stage received bytes, prepare or reuse an image, ask for a description, insert into the original note, then clear staging. Preserve that order so interrupted captures remain recoverable. Renames and recovery share the capture queue. Descriptions edited in Bases are read back before capture processing; avoid replacing them with stale values.
 
-`images/embeds.ts` parses inline Markdown images with Lezer, excluding code, escaped markers, HTML comments and frontmatter. It resolves URL-encoded relative destinations against the source note and matches the resulting image path. Nested alt text is supported; wiki and reference-style embeds are not resolved. The parser and its licenses are bundled, so lookup does not depend on an Obsidian parser export.
+`images/embeds.ts` parses Markdown images with Lezer, excluding code, escaped markers, HTML comments and frontmatter. It resolves URL-encoded relative destinations against the source note and matches the resulting image path. Cursor lookup supports nested alt text and inline destinations; save reports also resolve reference-style embeds. `NoteImages` uses Obsidian's link index to discover notes and its embed cache to report wiki embeds. The parser and its licenses are bundled, so lookup does not depend on an Obsidian parser export.
 
 `RecordLibrary` builds editor/file menus synchronously from its current catalog. Both handlers use `addRecordMenu` for available actions. The edit callback captures the image ID, refreshes the record before opening the dialog, and uses the command's existing save path. A removed record reports an error instead of falling back to another image. `main.ts` registers and disposes the workspace event hooks through the plugin lifecycle.
 

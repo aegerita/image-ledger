@@ -6,7 +6,7 @@ test('settings use flat storage unless a current layout is explicitly saved', ()
   assert.deepEqual(settingsFromData(undefined), DEFAULTS);
   assert.deepEqual(settingsFromData(null), DEFAULTS);
   assert.deepEqual(settingsFromData({interceptPaste: false, interceptDrop: true, showRecordLink: false}), {
-    interceptPaste: false, interceptDrop: true, showRecordLink: false, storageLayout: 'flat',
+    interceptPaste: false, interceptDrop: true, showRecordLink: false, syncCustomAlt: false, storageLayout: 'flat',
   });
   assert.equal(settingsFromData({}).storageLayout, 'flat');
   assert.equal(settingsFromData({storageLayout: 'import-year'}).storageLayout, 'import-year');
@@ -18,4 +18,6 @@ test('malformed saved settings cannot enable invalid toggle values', () => {
   assert.deepEqual(settingsFromData([]), DEFAULTS);
   assert.equal(settingsFromData({interceptPaste: 'false'}).interceptPaste, true);
   assert.equal(settingsFromData({storageLayout: 'invalid'}).storageLayout, 'flat');
+  assert.equal(settingsFromData({syncCustomAlt: 'true'}).syncCustomAlt, false);
+  assert.equal(settingsFromData({syncCustomAlt: true}).syncCustomAlt, true);
 });

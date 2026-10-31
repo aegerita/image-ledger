@@ -29,6 +29,8 @@ In an editor, place the cursor inside a managed image's Markdown embed and run *
 
 **Edit image description** is also added to file menus for managed images and their record notes. Source and Live Preview editor menus include it when the editor selection is inside a managed Markdown image embed. Ordinary text and unmanaged images get no added item. Reading View has no editor-menu integration; use the command or the image/record file menu. Native right-click delivery and targeting on rendered images remain unverified; current checks invoke the menu handlers through Obsidian's API. Wiki and reference-style embeds are not supported by cursor lookup.
 
+Description saves report updated embeds and skipped references, including customized alt text, wiki embeds without alt text, and missing notes. Choose **Review skipped embeds** in the notice to inspect them and explicitly overwrite an individual single-line inline Markdown embed. Multiline and reference-style embeds are reported but cannot be overwritten. Notes with paths that cannot be stored in image records (for example, names containing brackets) are reported and left unchanged. Copied references found through Obsidian's link index are added to the record; indexing may take a moment after a note changes. **Always keep alt text in sync with the description** in settings overwrites custom alt text on generated-form embeds during future saves; it is off by default.
+
 Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace.
 
 ## Where your images go

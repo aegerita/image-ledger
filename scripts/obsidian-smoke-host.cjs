@@ -252,7 +252,6 @@ module.exports = async (app, config) => {
         const oldEmbed = embed(jpeg, added);
         const customEmbed = embed({...jpeg, description: 'Custom added-note label'}, added);
         const before = '# Synthetic added source\n\nBEFORE_ADDED_IMAGE\n\n' + oldEmbed + '\n\n' + customEmbed + '\n\nAFTER_ADDED_IMAGE\n';
-        await app.vault.create(added, before);
         await open(jpeg.recordPath);
         const process = app.vault.process;
         let injected = false;
@@ -263,7 +262,7 @@ module.exports = async (app, config) => {
             for (const note of jpeg.sourceNotes) {
               assert.ok(read(note).includes(embed({...jpeg, description}, note)), 'Original source was not updated before the conflict');
             }
-            assert.equal(read(added), before, 'Added source changed before it was referenced');
+            await app.vault.create(added, before);
             await app.fileManager.processFrontMatter(file, properties => {
               assert.ok(Array.isArray(properties.source_notes), 'Missing editable source references');
               properties.source_notes.push('[[' + added.replace(/\.md$/, '') + ']]');
@@ -283,6 +282,8 @@ module.exports = async (app, config) => {
         } finally {
           app.vault.process = process;
         }
+        await app.vault.delete(app.vault.getAbstractFileByPath(added));
+        await wait(() => !app.metadataCache.resolvedLinks[added], 'removed temporary reference index');
         await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(jpeg.recordPath), properties => {
           properties.source_notes = properties.source_notes.filter(link => link !== '[[' + added.replace(/\.md$/, '') + ']]');
         });
@@ -365,7 +366,7 @@ module.exports = async (app, config) => {
         const png = record('sample.png');
         const prototype = 'Menu-prototype.md';
         const target = './' + png.imagePath;
-        const content = `# Prototype\n\n![Photo [draft]](${target})\n\n\`![Example](${target})\`\n`;
+        const content = `# Prototype\n\n![Photo [draft]](${target})\n\n\`![Example](${target})\`\n\n${embed(png, prototype)}\n`;
         await app.vault.create(prototype, content);
         const view = await open(prototype);
         const offset = content.indexOf('![Photo') + 3;
@@ -540,12 +541,18 @@ module.exports = async (app, config) => {
         verifyRecord(record('sample.png'));
       });
       const operations = [];
+      const originalNotes = {};
       await step('Prepare isolated sources for interrupted description saves', async () => {
         for (const [fixture, count, description] of [
           ['sample-exif.jpg', 2, 'Restarted partial-note JPEG.'],
           ['sample.png', 1, 'Restarted record-write PNG.'],
         ]) {
           const original = record(fixture);
+          for (const sourcePath of original.sourceNotes) {
+            if (!(sourcePath in originalNotes)) originalNotes[sourcePath] = read(sourcePath);
+            await app.vault.modify(app.vault.getAbstractFileByPath(sourcePath), '# Temporarily isolated synthetic source\n');
+          }
+          await wait(() => original.sourceNotes.every(note => !app.metadataCache.resolvedLinks[note]?.[original.imagePath]), 'isolated source reference index');
           const notes = [];
           for (let index = 0; index < count; index++) {
             const note = `Interrupted-${original.format}-${index}.md`;
@@ -572,7 +579,7 @@ module.exports = async (app, config) => {
         assert.equal(pending.storageFolder, '', 'Dated notes must still use flat storage by default');
         assert.equal(hash(path.join(root, pending.dataPath)), fixtures['sample.png']);
         const token = randomUUID(); plugin().__imageLedgerSmokeToken = token;
-        checkpoint = {runId: config.runId, token, pending, pngId: record('sample.png').id, operations};
+        checkpoint = {runId: config.runId, token, pending, pngId: record('sample.png').id, operations, originalNotes};
       });
       await step('Retain partial-note and record-write failures for restart', async () => {
         for (const operation of operations) {
@@ -661,7 +668,12 @@ module.exports = async (app, config) => {
           assert.equal(fs.existsSync(path.join(root, operation.receipt)), false, 'Completed operation receipt remains');
         }
         assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')), [], 'Pending description operations remain');
+        for (const [note, content] of Object.entries(checkpoint.originalNotes)) {
+          await app.vault.modify(app.vault.getAbstractFileByPath(note), content);
+        }
         for (const operation of checkpoint.operations) {
+          for (const note of operation.notes) await app.vault.delete(app.vault.getAbstractFileByPath(note.path));
+          await wait(() => operation.notes.every(note => !app.metadataCache.resolvedLinks[note.path]), 'removed interrupted reference index');
           await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(record(operation.fixture).recordPath), properties => {
             properties.description = operation.original.description;
             properties.caption_status = operation.original.captionStatus;
@@ -671,7 +683,6 @@ module.exports = async (app, config) => {
         await plugin().library.reconcileAll();
         for (const operation of checkpoint.operations) {
           verifyRecord(record(operation.fixture));
-          for (const note of operation.notes) await app.vault.delete(app.vault.getAbstractFileByPath(note.path));
         }
       });
       await step('Recover real caption-open paste after app reload', async () => {
@@ -681,7 +692,7 @@ module.exports = async (app, config) => {
         await wait(async () => (await plugin().library.store.pendingCaptures()).length === 0 && synchronized('sample.png', 'Recovered synthetic PNG.'), 'recovery completion');
         const png = verifyRecord(record('sample.png'));
         assert.equal(png.id, checkpoint.pngId);
-        assert.deepEqual([...png.sourceNotes].sort(), [source, other, 'Closed-editor.md'].sort());
+        assert.deepEqual([...png.sourceNotes].sort(), [source, other, 'Closed-editor.md', 'Menu-prototype.md'].sort());
         assert.equal(plugin().library.store.allRecords().length, 2);
         assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/staging')), []);
       });
@@ -691,6 +702,64 @@ module.exports = async (app, config) => {
         assert.ok(receipt.records.every(record => record.captionStatus === 'confirmed'));
         assert.equal(app.commands.executeCommandById('image-ledger:audit-images'), true);
         receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit notice');
+      });
+      await step('Bases save discovers copied embeds and offers explicit overwrite review', async () => {
+        const original = record('sample.png');
+        const copied = 'Description-copy.md';
+        const wiki = 'Description-wiki.md';
+        const missing = 'Description-missing.md';
+        const forms = 'Description-forms.md';
+        const unsupported = 'Description [draft].md';
+        const fixtures = [copied, wiki, forms, unsupported];
+        const custom = embed({...original, description: 'Custom alt'}, copied);
+        const secondCustom = embed({...original, description: 'Second custom alt'}, copied);
+        await app.vault.create(copied, embed(original, copied) + '\n' + custom + '\n' + secondCustom);
+        const formsText = `![Line one\nline two](${original.imagePath})\n![Old][photo]\n\n[photo]: ${original.imagePath}`;
+        await app.vault.create(forms, formsText);
+        await app.vault.create(unsupported, embed(original, unsupported));
+        await app.vault.create(wiki, `![[${original.imagePath}]]`);
+        await wait(() => fixtures.every(note => app.metadataCache.resolvedLinks[note]?.[original.imagePath]), 'copied reference index');
+        const description = 'Discovered description update.';
+        await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(original.recordPath), properties => {
+          properties.source_notes.push(`[[${missing.replace(/\.md$/, '')}]]`);
+          properties.description = description;
+        });
+        await wait(() => snapshot(original.recordPath).description === description, 'Bases description save');
+        const updated = record('sample.png');
+        assert.ok(updated.sourceNotes.includes(copied));
+        assert.ok(updated.sourceNotes.includes(wiki));
+        assert.equal(read(copied), embed(updated, copied) + '\n' + custom + '\n' + secondCustom);
+        assert.equal(read(forms), formsText);
+        assert.equal(read(unsupported), embed(original, unsupported));
+        assert.ok(!updated.sourceNotes.includes(unsupported));
+        assert.equal(read(wiki), `![[${original.imagePath}]]`);
+        const notice = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')])
+          .find(element => element.textContent.includes('Wiki embed: no alt text')
+            && element.textContent.includes('Missing source note') && element.textContent.includes('Customized alt text')
+            && element.textContent.includes('Multiline Markdown embed') && element.textContent.includes('Reference-style Markdown embed')
+            && element.textContent.includes('Unsupported note path')), 'save skip report');
+        notice.querySelector('button').click();
+        const reviewRows = () => documents().flatMap(doc => [...doc.querySelectorAll('.modal .setting-item')]);
+        const unsupportedRows = reviewRows().filter(row => [forms, unsupported, wiki].some(note => row.textContent.includes(note)));
+        assert.equal(unsupportedRows.length, 4);
+        assert.ok(unsupportedRows.every(row => !row.querySelector('button')), 'Unsupported forms must have no overwrite action');
+        for (const remaining of [1, 0]) {
+          const overwrite = await wait(() => reviewRows().find(row => row.textContent.includes(copied))?.querySelector('button'), 'fresh per-embed review');
+          overwrite.click();
+          await wait(() => !overwrite.isConnected, 'refreshed review after overwrite');
+          assert.equal(reviewRows().filter(row => row.textContent.includes(copied)).length, remaining);
+          const expected = [embed(updated, copied), embed(updated, copied), remaining ? secondCustom : embed(updated, copied)].join('\n');
+          assert.equal(read(copied), expected);
+        }
+        assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')), []);
+        receipt.descriptionReport = notice.textContent;
+        for (const note of fixtures) await app.vault.delete(app.vault.getAbstractFileByPath(note));
+        await wait(() => fixtures.every(note => !app.metadataCache.resolvedLinks[note]), 'review fixture cleanup index');
+        await app.fileManager.processFrontMatter(app.vault.getAbstractFileByPath(original.recordPath), properties => {
+          properties.source_notes = original.sourceNotes.map(note => `[[${note.replace(/\.md$/, '')}]]`);
+        });
+        await plugin().library.store.setDescription(original, original.description, plugin().library.synchronize);
+        verifyRecord(record('sample.png'));
       });
       receipt.status = 'PASS';
     }

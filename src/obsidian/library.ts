@@ -1,15 +1,55 @@
 import { Notice, TFile, type App, type Editor, type MarkdownFileInfo, type MarkdownView, type Menu, type TAbstractFile } from 'obsidian';
 import type { ImageRecord } from '../images/model';
 import { findManagedImage, managedImageEmbeds } from '../images/embeds';
-import { MediaStore, type PendingCapture, type PreparedCapture } from '../images/store';
+import { MediaStore, type PendingCapture, type PreparedCapture, type SynchronizeRecord } from '../images/store';
 import type { ProjectionJournal } from '../images/operations';
-import { NoteImages } from './notes';
-import { RecordPicker } from './ui';
+import { NoteImages, type SkippedEmbed } from './notes';
+import { DescriptionSaveReview, RecordPicker } from './ui';
 
 export class RecordLibrary {
   private initialized?: Promise<void>;
   private recordTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private synchronize = (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => this.notes.updateEmbeds(previous, next, journal);
+  private synchronize = this.synchronizer();
+
+  private synchronizer(overwrite?: SkippedEmbed): SynchronizeRecord {
+    return Object.assign(
+      (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => this.notes.updateEmbeds(previous, next, journal, overwrite),
+      {
+        references: (record: ImageRecord) => this.notes.references(record).paths,
+        saved: (record: ImageRecord, journal: ProjectionJournal) => {
+          const report = this.notes.saveReport(journal, record);
+          const summary = `Updated ${report.updated} embeds in ${report.notes} notes. Skipped ${report.skipped.length}.`;
+          if (!report.skipped.length || typeof document === 'undefined') {
+            new Notice(summary);
+            return;
+          }
+          const content = document.createDocumentFragment();
+          content.append(summary + ' ' + report.skipped.map(item => `${item.path}: ${item.reason}`).join('; ') + ' ');
+          const review = document.createElement('button');
+          review.textContent = 'Review skipped embeds';
+          review.addEventListener('click', () => new DescriptionSaveReview(this.app, report.skipped,
+            item => this.overwriteSkipped(record, item)).open());
+          content.append(review);
+          new Notice(content, 12000);
+        },
+      },
+    );
+  }
+
+  private async overwriteSkipped(record: ImageRecord, item: SkippedEmbed): Promise<SkippedEmbed[]> {
+    await this.store.refresh(this.synchronize);
+    const current = this.store.allRecords().find(candidate => candidate.id === record.id);
+    if (!current || current.description !== record.description) {
+      throw new Error('The image description changed. Save again and review the new results.');
+    }
+    let remaining: SkippedEmbed[] = [];
+    const synchronize = this.synchronizer(item);
+    synchronize.saved = (saved, journal) => {
+      remaining = this.notes.saveReport(journal, saved).skipped;
+    };
+    await this.store.setDescription(current, current.description, synchronize, record.description);
+    return remaining;
+  }
 
   constructor(
     private app: App,
@@ -83,7 +123,6 @@ export class RecordLibrary {
       const description = await describe(record);
       if (description === null) return;
       await this.store.setDescription(record, description, this.synchronize);
-      new Notice('Image description updated.');
     }, recordId);
   }
 

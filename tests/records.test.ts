@@ -300,3 +300,27 @@ test('unsupported nonempty source note lists are rejected instead of erasing ref
     assert.equal(parseRecord(edited), null);
   }
 });
+
+test('save inspection finds full, collapsed and shortcut reference embeds without enabling cursor lookup', () => {
+  const record = fixture();
+  const occurrences = ['![Alt][photo]', '![Photo][]', '![PHOTO]', '![Again][  photo  ]'];
+  const text = occurrences.join('\n') + `\n\n[photo]: <${record.imagePath}> "Title"`;
+  const matches = managedImageEmbeds(text, 'Note.md', [record], true);
+  assert.deepEqual(matches.map(match => text.slice(match.from, match.to)), occurrences);
+  assert.ok(matches.every(match => match.reference));
+  assert.deepEqual(managedImageEmbeds(text, 'Note.md', [record]), []);
+  assert.equal(findManagedImage(text, 'Note.md', [record], 2), undefined);
+});
+
+test('reference inspection respects first definitions, code exclusions and unresolved labels', () => {
+  const record = fixture();
+  const text = [
+    '---', `[photo]: ${record.imagePath}`, '---',
+    '![Unresolved][photo]', '![External][remote]', '`![Code][local]`',
+    '![Real][local]', '',
+    '[remote]: https://example.invalid/image.png', `[remote]: ${record.imagePath}`,
+    `[local]: ${record.imagePath}`, `[local]: images/different.png`,
+  ].join('\n');
+  const matches = managedImageEmbeds(text, 'Note.md', [record], true);
+  assert.deepEqual(matches.map(match => text.slice(match.from, match.to)), ['![Real][local]']);
+});

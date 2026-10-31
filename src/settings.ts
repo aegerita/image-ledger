@@ -4,10 +4,11 @@ export interface Settings {
   interceptPaste: boolean;
   interceptDrop: boolean;
   showRecordLink: boolean;
+  syncCustomAlt: boolean;
   storageLayout: StorageLayout;
 }
 
-export const DEFAULTS: Settings = {interceptPaste: true, interceptDrop: true, showRecordLink: true, storageLayout: 'flat'};
+export const DEFAULTS: Settings = {interceptPaste: true, interceptDrop: true, showRecordLink: true, syncCustomAlt: false, storageLayout: 'flat'};
 
 export function isStorageLayout(value: unknown): value is StorageLayout {
   return value === 'flat' || value === 'import-year' || value === 'note-year';
@@ -19,6 +20,7 @@ export function settingsFromData(data: unknown): Settings {
     interceptPaste: typeof saved?.interceptPaste === 'boolean' ? saved.interceptPaste : DEFAULTS.interceptPaste,
     interceptDrop: typeof saved?.interceptDrop === 'boolean' ? saved.interceptDrop : DEFAULTS.interceptDrop,
     showRecordLink: typeof saved?.showRecordLink === 'boolean' ? saved.showRecordLink : DEFAULTS.showRecordLink,
+    syncCustomAlt: typeof saved?.syncCustomAlt === 'boolean' ? saved.syncCustomAlt : DEFAULTS.syncCustomAlt,
     storageLayout: isStorageLayout(saved?.storageLayout) ? saved.storageLayout : DEFAULTS.storageLayout,
   };
 }

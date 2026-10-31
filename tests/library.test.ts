@@ -98,7 +98,14 @@ function fixture(persisted = {
     pendingPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => path.startsWith('.image-ledger/staging/')),
     operationPaths: async () => [...text.keys()].filter(path => /^\.image-ledger\/operations\/[^/]+\.json$/.test(path)),
   };
+  const resolvedLinks: Record<string, Record<string, number>> = {};
+  const cachedEmbeds: Record<string, {original: string; link: string}[]> = {};
   const app = {
+    metadataCache: {
+      resolvedLinks,
+      getFileCache: (file: TFile) => ({embeds: cachedEmbeds[file.path] ?? []}),
+      getFirstLinkpathDest: (link: string) => ({path: link}),
+    },
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path),
       read: (file: TFile) => io.read(file.path),
@@ -116,7 +123,8 @@ function fixture(persisted = {
   } as unknown as App;
   const errors: unknown[] = [];
   const store = new host.MediaStore(io);
-  const notes = new host.NoteImages(app, {...DEFAULTS});
+  const settings = {...DEFAULTS};
+  const notes = new host.NoteImages(app, settings);
   const library = new host.RecordLibrary(app, store, notes, error => { errors.push(error); });
   const workflow = (describe: (record: ImageRecord) => Promise<string | null>) => new CaptureWorkflow(store, library, notes, {
     describe, notify: () => {}, report: error => { errors.push(error); },
@@ -146,7 +154,7 @@ function fixture(persisted = {
     leaves.push({view: {file: files.get(path), editor, save: () => io.write(path, content)}});
     return editor;
   };
-  return {io, text, files, leaves, store, notes, library, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
+  return {io, text, files, leaves, store, notes, library, resolvedLinks, cachedEmbeds, settings, workflow, drain, errors, openEditor, persisted, recordReads: () => recordReads, recordScans: () => recordScans, activate: (path: string) => { activeFile = files.get(path); }};
 }
 
 test('description command resolves the live editor target and scopes its fallback picker by actual embeds', async () => {
@@ -1019,7 +1027,7 @@ test('startup refuses ambiguous moved-record identities and retains all recovery
   assert.equal((await resumed.io.operationPaths()).length, 1);
 });
 
-for (const malformed of ['path traversal', 'projection gap', 'overlapping ranges', 'wrong id'] as const) {
+for (const malformed of ['path traversal', 'discovered path traversal', 'projection gap', 'overlapping ranges', 'wrong id'] as const) {
   test(`startup retains a receipt with ${malformed} before writing any projection`, async () => {
     const {f} = await interruptedSaveFixture();
     const process = f.io.process;
@@ -1036,6 +1044,8 @@ for (const malformed of ['path traversal', 'projection gap', 'overlapping ranges
     assert.ok(plan);
     if (malformed === 'path traversal') {
       operation.notes['../Outside.md'] = plan;
+    } else if (malformed === 'discovered path traversal') {
+      operation.discoveredNotes = ['../Outside.md'];
     } else if (malformed === 'projection gap') {
       plan.after = plan.after.replace('Keep surrounding text.', 'Changed outside the generated embeds.');
     } else if (malformed === 'overlapping ranges') {
@@ -1430,4 +1440,183 @@ test('recovery preserves existing images with either parenthesis URL form and cu
       }
     }
   }
+});
+
+
+test('Bases description saves discover copied references and report custom, wiki and missing notes', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+  const sample = await f.store.describe(prepared, 'Old');
+  const embed = `![Old](${sample.imagePath})`;
+  await f.io.write('Original.md', embed + `\n![Custom](${sample.imagePath})`);
+  await f.io.write('Copy.md', embed);
+  await f.io.write('Wiki.md', `![[${sample.imagePath}]]`);
+  f.resolvedLinks[sample.recordPath] = {[sample.imagePath]: 1};
+  f.resolvedLinks['Copy.md'] = {[sample.imagePath]: 1};
+  f.resolvedLinks['Wiki.md'] = {[sample.imagePath]: 1};
+  f.cachedEmbeds['Wiki.md'] = [{original: `![[${sample.imagePath}]]`, link: sample.imagePath}];
+  await f.io.write(sample.recordPath, serializeRecord({...sample, sourceNotes: ['Original.md', 'Missing.md']})
+    .replace('description: "Old"', 'description: "New longer"'));
+  const reports: ReturnType<typeof f.notes.saveReport>[] = [];
+  const saveReport = f.notes.saveReport.bind(f.notes);
+  f.notes.saveReport = (journal, record) => {
+    const result = saveReport(journal, record);
+    reports.push(result);
+    return result;
+  };
+  await f.library.reconcileAll();
+  assert.equal(f.text.get('Copy.md'), `![New longer](${sample.imagePath})`);
+  assert.equal(f.text.get('Original.md'), `![New longer](${sample.imagePath})\n![Custom](${sample.imagePath})`);
+  assert.equal(f.text.get('Wiki.md'), `![[${sample.imagePath}]]`);
+  assert.deepEqual(parseRecord(f.text.get(sample.recordPath)!)!.sourceNotes, ['Original.md', 'Missing.md', 'Copy.md', 'Wiki.md']);
+  assert.equal(reports.at(-1)!.skipped[0].from, `![New longer](${sample.imagePath})\n`.length);
+  assert.equal(reports.at(-1)!.updated, 2);
+  assert.equal(reports.at(-1)!.notes, 2);
+  assert.deepEqual(reports.at(-1)!.skipped.map(item => item.reason), [
+    'Customized alt text or non-generated Markdown form', 'Missing source note', 'Wiki embed: no alt text',
+  ]);
+});
+
+for (const explicit of [false, true]) {
+  test(`custom alt overwrite requires ${explicit ? 'an exact reviewed occurrence' : 'the opt-in setting'}`, async () => {
+    const f = fixture();
+    await f.library.ready();
+    const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+    const sample = await f.store.describe(prepared, 'Old');
+    const custom = `![Custom](${sample.imagePath})`;
+    await f.io.write('Original.md', `${custom}\n${custom}\n\`${custom}\``);
+    f.settings.syncCustomAlt = !explicit;
+    const selection = explicit ? {path: 'Original.md', from: 0, text: custom, reason: 'Custom'} : undefined;
+    await f.store.setDescription(sample, 'New', (previous, next, journal) => f.notes.updateEmbeds(previous, next, journal, selection));
+    assert.equal(f.text.get('Original.md'), `![New](${sample.imagePath})\n${explicit ? custom : `![New](${sample.imagePath})`}\n\`${custom}\``);
+  });
+}
+
+test('copied reference discovery survives interruption and restart without changing custom text', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+  const sample = await f.store.describe(prepared, 'Old');
+  await f.io.write('Original.md', `![Old](${sample.imagePath})`);
+  await f.io.write('Copy.md', `![Old](${sample.imagePath})\n![Custom](${sample.imagePath})`);
+  f.resolvedLinks['Copy.md'] = {[sample.imagePath]: 1};
+  const process = f.io.process;
+  f.io.process = async (path, update) => {
+    if (path === 'Copy.md') throw new Error('Interrupted copy');
+    await process(path, update);
+  };
+  f.activate('Original.md');
+  await f.library.editDescription(async () => 'New', sample.id);
+  assert.match(String(f.errors[0]), /Interrupted copy/);
+  const restarted = fixture(f.persisted);
+  await restarted.library.ready();
+  assert.equal(restarted.text.get('Copy.md'), `![New](${sample.imagePath})\n![Custom](${sample.imagePath})`);
+  assert.ok(parseRecord(restarted.text.get(sample.recordPath)!)!.sourceNotes.includes('Copy.md'));
+  assert.deepEqual(await restarted.io.operationPaths(), []);
+});
+
+for (const unsupported of ['Copy [draft].md', 'Copy#draft.md']) {
+  test(`indexed unsupported path is reported without blocking save or recovery: ${unsupported}`, async () => {
+    const f = fixture();
+    await f.library.ready();
+    const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+    const sample = await f.store.describe(prepared, 'Old');
+    await f.io.write('Original.md', `![Old](${sample.imagePath})`);
+    const copied = `![Old](${sample.imagePath})`;
+    await f.io.write(unsupported, copied);
+    f.resolvedLinks[unsupported] = {[sample.imagePath]: 1};
+    const process = f.io.process;
+    f.io.process = async (path, update) => {
+      if (path === sample.recordPath) throw new Error('Interrupted record commit');
+      await process(path, update);
+    };
+    await f.library.editDescription(async () => 'New', sample.id);
+    assert.match(String(f.errors[0]), /Interrupted record commit/);
+    const restarted = fixture(f.persisted);
+    restarted.resolvedLinks[unsupported] = {[sample.imagePath]: 1};
+    const reports: ReturnType<typeof restarted.notes.saveReport>[] = [];
+    const saveReport = restarted.notes.saveReport.bind(restarted.notes);
+    restarted.notes.saveReport = (journal, record) => {
+      const report = saveReport(journal, record);
+      reports.push(report);
+      return report;
+    };
+    await restarted.library.ready();
+    assert.deepEqual(await restarted.io.operationPaths(), []);
+    assert.deepEqual(parseRecord(restarted.text.get(sample.recordPath)!)!.sourceNotes, ['Original.md']);
+    assert.equal(restarted.text.get('Original.md'), `![New](${sample.imagePath})`);
+    assert.equal(restarted.text.get(unsupported), copied);
+    await restarted.library.editDescription(async () => 'Latest', sample.id);
+    assert.deepEqual(restarted.errors, []);
+    assert.equal(reports.at(-1)!.skipped[0].path, unsupported);
+    assert.match(reports.at(-1)!.skipped[0].reason, /Unsupported note path/);
+    assert.equal(reports.at(-1)!.skipped[0].from, undefined);
+    assert.deepEqual(await restarted.io.operationPaths(), []);
+  });
+}
+
+test('reports multiline and reference-style embeds without offering unsafe overwrites or double-counting inline embeds', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+  const sample = await f.store.describe(prepared, 'Old');
+  const inline = `![Old](${sample.imagePath})`;
+  const multiline = `![Line one\nline two](${sample.imagePath})`;
+  const reference = '![Old][photo]';
+  await f.io.write('Original.md', `${inline}\n${multiline}\n${reference}\n\n[photo]: ${sample.imagePath}`);
+  f.cachedEmbeds['Original.md'] = [inline, multiline].map(original => ({original, link: sample.imagePath}));
+  const reports: ReturnType<typeof f.notes.saveReport>[] = [];
+  const saveReport = f.notes.saveReport.bind(f.notes);
+  f.notes.saveReport = (journal, record) => {
+    const report = saveReport(journal, record);
+    reports.push(report);
+    return report;
+  };
+  f.settings.syncCustomAlt = true;
+  await f.library.editDescription(async () => 'New', sample.id);
+  assert.deepEqual(f.errors, []);
+  assert.equal(reports.at(-1)!.updated, 1);
+  assert.deepEqual(reports.at(-1)!.skipped.map(item => item.reason), [
+    'Multiline Markdown embed: overwrite unsupported', 'Reference-style Markdown embed: overwrite unsupported',
+  ]);
+  assert.ok(reports.at(-1)!.skipped.every(item => item.from === undefined));
+  assert.equal(f.text.get('Original.md'), `![New](${sample.imagePath})\n${multiline}\n${reference}\n\n[photo]: ${sample.imagePath}`);
+  assert.deepEqual(await f.io.operationPaths(), []);
+});
+
+test('review overwrite rejects a Bases edit after refresh but before the mutation baseline', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+  const sample = await f.store.describe(prepared, 'Reviewed description');
+  const custom = `![Custom caption](${sample.imagePath})`;
+  await f.io.write('Original.md', custom);
+  const before = new Map(f.text);
+  const newer = f.text.get(sample.recordPath)!.replace('description: "Reviewed description"', 'description: "Newer Bases description"');
+  let armed = false;
+  let injected = false;
+  const setDescription = f.store.setDescription.bind(f.store);
+  f.store.setDescription = (...args) => {
+    armed = true;
+    return setDescription(...args);
+  };
+  const exists = f.io.exists;
+  f.io.exists = async path => {
+    if (armed && !injected && path === `.image-ledger/operations/${sample.id}.json`) {
+      injected = true;
+      f.text.set(sample.recordPath, newer);
+    }
+    return exists(path);
+  };
+  const review = f.library as unknown as {
+    overwriteSkipped(record: ImageRecord, item: {path: string; from: number; text: string; reason: string}): Promise<unknown>;
+  };
+  await assert.rejects(review.overwriteSkipped(sample, {
+    path: 'Original.md', from: 0, text: custom, reason: 'Custom caption',
+  }), /image description changed/);
+  assert.equal(injected, true);
+  before.set(sample.recordPath, newer);
+  assert.deepEqual(f.text, before, 'Rejection must preserve the newer record, note, XMP and receipt state');
+  assert.deepEqual(await f.io.operationPaths(), []);
 });

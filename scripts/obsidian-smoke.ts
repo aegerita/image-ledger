@@ -155,7 +155,7 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     assert.equal(record.recordPath, file);
     assert.equal(record.captionStatus, 'confirmed', 'Unfinished description');
     const expectedSources = [sourceNote, otherNote];
-    if (record.format === 'png') expectedSources.push('Closed-editor.md');
+    if (record.format === 'png') expectedSources.push('Closed-editor.md', 'Menu-prototype.md');
     assert.deepEqual(new Set(record.sourceNotes), new Set(expectedSources), 'Capture note backlinks must match');
     const bytes = await readFile(path.join(vault, record.imagePath));
     assert.equal(sha256(bytes), record.sha256); assert.equal(bytes.length, record.bytes);

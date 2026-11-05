@@ -3,6 +3,7 @@ import type ImageLedgerPlugin from '../main';
 import { normalizeDescription } from '../images/records';
 import { isStorageLayout } from '../settings';
 import type { SkippedEmbed } from './notes';
+import type { ImageAudit } from '../images/store';
 import type { ImageRecord } from '../images/model';
 
 export class DescriptionModal extends Modal {
@@ -205,6 +206,30 @@ export class DescriptionSaveReview extends Modal {
           }
         }));
       }
+    }
+  }
+}
+
+export class ImageAuditModal extends Modal {
+  constructor(app: App, private report: ImageAudit) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText('Image record check');
+    this.contentEl.addClass('image-ledger-audit');
+    const report = this.report;
+    this.contentEl.createEl('p', {
+      text: `${report.records} image records · ${report.pending} descriptions pending · ${report.missing} missing files · ${report.interrupted} interrupted captures`,
+    });
+    this.contentEl.createEl('p', {text: 'This check does not change files or attempt recovery.'});
+    if (!report.issues.length) {
+      this.contentEl.createEl('p', {text: 'No issues found.'});
+    }
+    for (const issue of report.issues) {
+      const row = this.contentEl.createDiv();
+      row.createEl('code', {text: issue.path});
+      row.createEl('p', {text: issue.reason});
     }
   }
 }

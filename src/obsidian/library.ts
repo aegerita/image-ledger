@@ -4,7 +4,7 @@ import { findManagedImage, managedImageEmbeds } from '../images/embeds';
 import { MediaStore, type PendingCapture, type PreparedCapture, type SynchronizeRecord } from '../images/store';
 import type { ProjectionJournal } from '../images/operations';
 import { NoteImages, type SkippedEmbed } from './notes';
-import { DescriptionSaveReview, RecordPicker } from './ui';
+import { DescriptionSaveReview, ImageAuditModal, RecordPicker } from './ui';
 
 export class RecordLibrary {
   private initialized?: Promise<void>;
@@ -15,6 +15,7 @@ export class RecordLibrary {
     return Object.assign(
       (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => this.notes.updateEmbeds(previous, next, journal, overwrite),
       {
+        failed: (error: Error) => this.report(error),
         references: (record: ImageRecord) => this.notes.references(record).paths,
         saved: (record: ImageRecord, journal: ProjectionJournal) => {
           const report = this.notes.saveReport(journal, record);
@@ -128,16 +129,8 @@ export class RecordLibrary {
 
   async audit(): Promise<void> {
     try {
-      await this.ready();
-      await this.store.refresh(this.synchronize);
-      const records = this.store.allRecords();
-      let missing = 0;
-      for (const record of records) {
-        if (!await this.app.vault.adapter.exists(record.imagePath)) missing++;
-      }
-      const pending = records.filter(record => record.captionStatus === 'pending').length;
-      const interrupted = (await this.store.pendingCaptures()).length;
-      new Notice(`${records.length} image records · ${pending} descriptions pending · ${missing} missing files · ${interrupted} interrupted captures`, 12000);
+      const report = await this.store.audit();
+      new ImageAuditModal(this.app, report).open();
     } catch (error) {
       this.report(error);
     }

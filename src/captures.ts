@@ -40,17 +40,25 @@ export class CaptureWorkflow {
         return;
       }
 
+      let recovered = 0;
       for (const pending of captures) {
-        const source = this.notes.sourceNote(pending.sourcePath);
-        const prepared = await this.library.prepare(pending);
-        const description = await this.ui.describe(prepared.record);
-        const record = await this.store.describe(prepared, description, source?.path ?? pending.sourcePath,
-          (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
-        await this.notes.recover(record, pending.sourcePath);
-        await this.store.complete(pending);
-        await this.library.openRecord(record);
+        try {
+          const source = this.notes.sourceNote(pending.sourcePath);
+          const prepared = await this.library.prepare(pending);
+          const description = await this.ui.describe(prepared.record);
+          const record = await this.store.describe(prepared, description, source?.path ?? pending.sourcePath,
+            (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
+          await this.notes.recover(record, pending.sourcePath);
+          await this.store.complete(pending);
+          await this.library.openRecord(record);
+          recovered++;
+        } catch (error) {
+          this.ui.report(error);
+        }
       }
-      this.ui.notify('Interrupted images recovered.');
+      this.ui.notify(recovered === captures.length
+        ? 'Interrupted images recovered.'
+        : `Recovered ${recovered} of ${captures.length} interrupted captures. Unresolved captures remain staged.`);
     });
   }
 

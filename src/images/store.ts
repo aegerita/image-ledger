@@ -35,6 +35,14 @@ export interface PendingCapture {
   format: 'jpg' | 'png';
 }
 
+export interface ImageAudit {
+  records: number;
+  pending: number;
+  missing: number;
+  interrupted: number;
+  issues: {path: string; reason: string}[];
+}
+
 export interface PreparedCapture {
   pending: PendingCapture;
   record: ImageRecord;
@@ -42,6 +50,7 @@ export interface PreparedCapture {
 }
 
 export type SynchronizeRecord = ((previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => Promise<void>) & {
+  failed?: (error: Error) => void;
   references?: (record: ImageRecord) => string[];
   saved?: (record: ImageRecord, journal: ProjectionJournal) => void;
 };
@@ -130,28 +139,48 @@ export class MediaStore {
       }
       saved.set(file, {content, record});
     }
+    const failed = new Set<string>();
+    const retainFailure = (file: string, error: unknown) => {
+      failed.add(file);
+      synchronize?.failed?.(new Error(`Unfinished image save (${file}): ${String(error)}. Other images remain available.`));
+    };
     if (synchronize) {
       for (const file of await this.io.operationPaths()) {
-        const record = await this.resumeOperation(file, synchronize);
-        const content = await this.io.read(record.recordPath);
-        saved.set(record.recordPath, {content, record: parseRecord(content)});
+        try {
+          const record = await this.resumeOperation(file, synchronize);
+          const content = await this.io.read(record.recordPath);
+          saved.set(record.recordPath, {content, record: parseRecord(content)});
+        } catch (error) {
+          retainFailure(file, error);
+        }
       }
     }
     const records = new Map<string, ImageRecord>();
     const hashes = new Map<string, ImageRecord>();
     for (const [file, entry] of saved) {
       let {content, record} = entry;
-      if (record && record.recordPath !== file && synchronize && !await this.io.exists(record.recordPath)) {
-        if (await this.findMovedRecord(record) === file) {
-          await this.mutate(file, record.id, {kind: 'reconcile'}, synchronize);
-          content = await this.io.read(file);
-          record = parseRecord(content);
+      if (!record) continue;
+      const receipt = operationPath(record.id);
+      if (synchronize && !failed.has(receipt)) {
+        try {
+          if (record.recordPath !== file && !await this.io.exists(record.recordPath)) {
+            if (await this.findMovedRecord(record) === file) {
+              await this.mutate(file, record.id, {kind: 'reconcile'}, synchronize);
+              content = await this.io.read(file);
+              const refreshed = parseRecord(content);
+              if (!refreshed) throw new Error('The moved image record cannot be read.');
+              record = refreshed;
+            }
+          }
+          if (record.recordPath === file) {
+            record = await this.reconcileRecord(record, content, synchronize);
+          }
+        } catch (error) {
+          retainFailure(receipt, error);
         }
       }
-      if (record && record.recordPath === file) {
-        if (synchronize) {
-          record = await this.reconcileRecord(record, content, synchronize);
-        }
+      // Keep failed identities indexed so importing the same bytes cannot create a second image.
+      if (record.recordPath === file || failed.has(receipt)) {
         records.set(record.id, record);
         hashes.set(record.sha256, record);
       }
@@ -312,11 +341,16 @@ export class MediaStore {
   rename(previousPath: string, renamedPath: string, synchronize: SynchronizeRecord): Promise<void> {
     const intent: RecordIntent = {kind: 'rename', from: previousPath, to: renamedPath};
     return this.exclusive(async () => {
+      const errors: unknown[] = [];
       // Relocate every affected receipt before a projection failure can stop this rename.
       for (const file of await this.io.operationPaths()) {
-        const operation = parseOperation(await this.io.read(file), file);
-        if (rewritePath(operation.recordPath, previousPath, renamedPath) !== operation.recordPath) {
-          await this.retargetOperation(operation);
+        try {
+          const operation = parseOperation(await this.io.read(file), file);
+          if (rewritePath(operation.recordPath, previousPath, renamedPath) !== operation.recordPath) {
+            await this.retargetOperation(operation);
+          }
+        } catch (error) {
+          errors.push(error);
         }
       }
       for (const cached of this.records.values()) {
@@ -326,9 +360,14 @@ export class MediaStore {
         const current = parseRecord(content);
         if (!current || current.id !== cached.id) continue;
         if (JSON.stringify(applyIntent(current, intent)) !== JSON.stringify(current)) {
-          await this.mutate(recordPath, current.id, intent, synchronize);
+          try {
+            await this.mutate(recordPath, current.id, intent, synchronize);
+          } catch (error) {
+            errors.push(error);
+          }
         }
       }
+      if (errors.length) throw new Error(errors.map(String).join('\n'));
     });
   }
 
@@ -490,7 +529,39 @@ export class MediaStore {
     await this.io.remove(pending.transactionPath);
   }
 
-  async pendingCaptures(): Promise<PendingCapture[]> {
+  audit(): Promise<ImageAudit> {
+    return this.exclusive(async () => {
+      const report: ImageAudit = {records: 0, pending: 0, missing: 0, interrupted: 0, issues: []};
+      for (const file of await this.io.recordPaths()) {
+        try {
+          const record = parseRecord(await this.io.read(file));
+          if (!record) throw new Error('Invalid image record');
+          report.records++;
+          if (record.captionStatus === 'pending') {
+            report.pending++;
+            report.issues.push({path: file, reason: 'Description pending. Use Edit image description.'});
+          }
+          if (!await this.io.exists(record.imagePath)) {
+            report.missing++;
+            report.issues.push({path: record.imagePath, reason: `Missing image. Record: ${file}`});
+          }
+        } catch (error) {
+          report.issues.push({path: file, reason: `Could not check record: ${String(error)}`});
+        }
+      }
+      const captures = await this.pendingCaptures((file, reason) => report.issues.push({path: file, reason}));
+      report.interrupted = captures.length;
+      for (const capture of captures) {
+        report.issues.push({path: capture.transactionPath, reason: `Interrupted capture for ${capture.sourcePath}. Run Recover interrupted image captures.`});
+      }
+      for (const file of await this.io.operationPaths()) {
+        report.issues.push({path: file, reason: 'Unfinished description save. Keep this receipt and affected notes for recovery.'});
+      }
+      return report;
+    });
+  }
+
+  async pendingCaptures(rejected?: (file: string, reason: string) => void): Promise<PendingCapture[]> {
     const captures: PendingCapture[] = [];
     for (const file of await this.io.pendingPaths()) {
       if (!file.endsWith('.json')) continue;
@@ -509,9 +580,12 @@ export class MediaStore {
           && /^(?:\d{4})?$/.test(item.storageFolder)
           && await this.io.exists(item.dataPath)) {
           captures.push(item);
+        } else {
+          rejected?.(file, 'Invalid capture receipt or missing staged image. Files retained for manual inspection.');
         }
       } catch {
         /* A partial receipt is retained for manual inspection, never treated as a valid image. */
+        rejected?.(file, 'Unreadable capture receipt. Files retained for manual inspection.');
       }
     }
     return captures;

@@ -6,7 +6,7 @@
 npm test
 ```
 
-This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, description conflicts, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. Partial-save tests rebuild runtime objects from persisted data after note, sidecar, record, and receipt-cleanup failures, then recover twice. It does not exercise the loaded Obsidian app.
+This checks TypeScript, builds the plugin, and tests image validation, byte identity, metadata, records/XMP, description conflicts, anchors, duplicate reuse, storage policies, recovery, and test-vault isolation. Partial-save tests rebuild runtime objects from persisted data after note, sidecar, record, and receipt-cleanup failures, then recover twice. Conflict-isolation tests verify that unrelated imports, edits, and capture recovery continue while the affected image retains its receipt and note text, then resumes after the conflict is resolved. It does not exercise the loaded Obsidian app.
 
 Description synchronization tests cover indexed copied references, custom alt preservation, explicit per-embed overwrite, opt-in synchronization, wiki and missing-note reporting, code exclusions, unsupported indexed note paths, multiline and reference-style skips, and restart during an update to a discovered note. Host checks also overwrite two skipped embeds in one review, verifying refreshed positions and disabled overwrite actions for unsupported forms.
 

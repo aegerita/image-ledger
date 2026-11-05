@@ -456,3 +456,41 @@ test('receipt recovery retains the pinned destination and rejects malformed rece
     assert.equal((await restarted.pendingCaptures()).length, 0);
   } finally {await f.cleanup();}
 });
+
+test('audit lists damaged and unfinished files without initializing or changing them', async () => {
+  const f = await fixture();
+  try {
+    const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'Source.md');
+    const {record} = await f.store.prepare(pending);
+    await f.io.remove(record.imagePath);
+    const broken = '.image-ledger/staging/broken.json';
+    const invalid = '.image-ledger/staging/invalid.json';
+    const operation = `.image-ledger/operations/${record.id}.json`;
+    await f.io.write(broken, '{');
+    await f.io.write(invalid, '{}');
+    await f.io.write(operation, '{');
+    const before = await f.io.read(record.recordPath);
+    const restarted = new MediaStore(f.io);
+    await restarted.initialize(async () => {});
+    const report = await restarted.audit();
+    assert.equal(report.records, 1);
+    assert.equal(report.pending, 1);
+    assert.equal(report.missing, 1);
+    assert.equal(report.interrupted, 1);
+    assert.deepEqual(new Set(report.issues.map(issue => issue.path)), new Set([
+      record.recordPath, record.imagePath, pending.transactionPath, broken, invalid, operation,
+    ]));
+    assert.match(report.issues.find(issue => issue.path === broken)!.reason, /Unreadable capture receipt/);
+    assert.match(report.issues.find(issue => issue.path === invalid)!.reason, /Invalid capture receipt/);
+    assert.equal(await f.io.read(operation), '{');
+    assert.equal(await f.io.read(broken), '{');
+    assert.equal(await f.io.read(record.recordPath), before);
+    assert.deepEqual(await f.io.readBinary(pending.dataPath), PNG);
+    await f.io.remove(pending.dataPath);
+    const missingPayload = await restarted.audit();
+    assert.equal(missingPayload.interrupted, 0);
+    assert.match(missingPayload.issues.find(issue => issue.path === pending.transactionPath)!.reason, /missing staged image/);
+  } finally {
+    await f.cleanup();
+  }
+});

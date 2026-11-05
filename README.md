@@ -31,7 +31,7 @@ In an editor, place the cursor inside a managed image's Markdown embed and run *
 
 Description saves report updated embeds and skipped references, including customized alt text, wiki embeds without alt text, and missing notes. Choose **Review skipped embeds** in the notice to inspect them and explicitly overwrite an individual single-line inline Markdown embed. Multiline and reference-style embeds are reported but cannot be overwritten. Notes with paths that cannot be stored in image records (for example, names containing brackets) are reported and left unchanged. Copied references found through Obsidian's link index are added to the record; indexing may take a moment after a note changes. **Always keep alt text in sync with the description** in settings overwrites custom alt text on generated-form embeds during future saves; it is off by default.
 
-Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace.
+Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace. That image remains blocked until its save can recover; unrelated images can still be imported and edited. Run **Check image records** to find unfinished saves.
 
 ## Where your images go
 
@@ -51,7 +51,7 @@ Received image bytes stay unchanged. Clipboard images may already have lost orig
 
 - **A description is unfinished:** run **Edit image description**.
 - **An import was interrupted:** run **Recover interrupted image captures**. The plugin retains staged files until capture finishes.
-- **An image seems missing:** run **Check image records** for counts of missing files, pending descriptions, and interrupted captures.
+- **An image seems missing:** run **Check image records** for a report listing missing image paths, pending descriptions, interrupted captures, unreadable capture receipts, and unfinished description saves. The report stays open until dismissed. It does not change files or attempt recovery, and remains available when recovery is blocked.
 
 For development and testing, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

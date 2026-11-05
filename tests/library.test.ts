@@ -761,7 +761,8 @@ test('a failed reconciliation does not block later queued work', async () => {
   f.text.set(sample.recordPath, f.text.get(sample.recordPath)!.replace('description: "Description A"', 'description: "Description B"'));
   const updateEmbeds = f.notes.updateEmbeds.bind(f.notes);
   f.notes.updateEmbeds = async () => { throw new Error('Temporary note failure'); };
-  await assert.rejects(f.library.reconcileAll(), /Temporary note failure/);
+  await f.library.reconcileAll();
+  assert.match(String(f.errors.at(-1)), /Temporary note failure/);
   f.notes.updateEmbeds = updateEmbeds;
 
   await f.library.reconcileAll();
@@ -1019,7 +1020,8 @@ test('startup refuses ambiguous moved-record identities and retains all recovery
   resumed.io.write = async path => { writes.push(path); };
   resumed.io.process = async path => { writes.push(path); };
 
-  await assert.rejects(resumed.library.ready(), /ambiguous|multiple|more than one/i);
+  await resumed.library.ready();
+  assert.match(String(resumed.errors.at(-1)), /ambiguous|multiple|more than one/i);
 
   assert.deepEqual(writes, []);
   assert.deepEqual(resumed.text, unchanged);
@@ -1061,7 +1063,8 @@ for (const malformed of ['path traversal', 'discovered path traversal', 'project
     resumed.io.write = async path => { writes.push(path); };
     resumed.io.process = async path => { writes.push(path); };
 
-    await assert.rejects(resumed.library.ready(), /Invalid image save recovery receipt/);
+    await resumed.library.ready();
+    assert.match(String(resumed.errors.at(-1)), /Invalid image save recovery receipt/);
 
     assert.deepEqual(writes, []);
     assert.equal(resumed.text.get(receipt), damaged);
@@ -1262,7 +1265,8 @@ test('a twice-interrupted capture save preserves a newer caption revert and its 
     if (path === 'Added.md') throw new Error('Second interruption');
     await resumedProcess(path, update);
   };
-  await assert.rejects(firstRestart.library.ready(), /Second interruption/);
+  await firstRestart.library.ready();
+  assert.match(String(firstRestart.errors.at(-1)), /Second interruption/);
   const [receipt] = await firstRestart.io.operationPaths();
   const operation = JSON.parse(firstRestart.text.get(receipt)!) as RecordOperation;
   assert.equal(operation.target?.description, 'Newer observed description');
@@ -1332,7 +1336,8 @@ test('restart retains divergent note text and its receipt for repeated safe reco
 
   for (let restart = 0; restart < 2; restart++) {
     const resumed = fixture(f.persisted);
-    await assert.rejects(resumed.library.ready(), /source note changed/i);
+    await resumed.library.ready();
+    assert.match(String(resumed.errors.at(-1)), /source note changed/i);
     assert.equal(resumed.text.get('Original.md'), divergent);
     assert.equal(resumed.text.get('Added.md'), originals.get('Added.md'));
     assert.deepEqual(parseRecord(resumed.text.get(sample.recordPath)!), sample);
@@ -1620,3 +1625,116 @@ test('review overwrite rejects a Bases edit after refresh but before the mutatio
   assert.deepEqual(f.text, before, 'Rejection must preserve the newer record, note, XMP and receipt state');
   assert.deepEqual(await f.io.operationPaths(), []);
 });
+
+test('conflicted save blocks only its image across imports, edits, capture recovery and retry', async () => {
+  const {f, sample} = await interruptedSaveFixture();
+  const process = f.io.process;
+  f.io.process = async (path, update) => {
+    if (path === 'Added.md') throw new Error('Interrupted save');
+    await process(path, update);
+  };
+  await f.library.editDescription(async () => 'Submitted description');
+  const projected = f.text.get('Original.md')!;
+  const divergent = projected + '\nIndependent edit';
+  f.text.set('Original.md', divergent);
+  const resumed = fixture(f.persisted);
+  await resumed.library.ready();
+  assert.match(String(resumed.errors.at(-1)), /source note changed/i);
+  assert.ok(resumed.store.allRecords().some(record => record.id === sample.id));
+  const [receipt] = await resumed.io.operationPaths();
+  const retained = resumed.text.get(receipt);
+
+  await resumed.library.editDescription(async () => 'Must not replace conflict', sample.id);
+  assert.match(String(resumed.errors.at(-1)), /source note changed/i);
+  assert.equal(resumed.text.get('Original.md'), divergent);
+  assert.equal(parseRecord(resumed.text.get(sample.recordPath)!)!.description, sample.description);
+
+  await resumed.io.write('Other.md', '# Other image\n');
+  const blocked = await resumed.store.stage({bytes: PNG, method: 'file'}, 'Original.md');
+  const healthy = await resumed.store.stage({bytes: JPEG, method: 'file'}, 'Other.md');
+  const recover = resumed.workflow(async () => 'Other description');
+  recover.recover();
+  await resumed.drain(recover);
+  assert.deepEqual((await resumed.store.pendingCaptures()).map(item => item.id), [blocked.id]);
+  assert.equal(await resumed.io.exists(healthy.dataPath), false);
+  const other = resumed.store.allRecords().find(record => record.id !== sample.id)!;
+  assert.ok(other);
+  assert.match(resumed.text.get('Other.md')!, /Other description/);
+  await resumed.library.editDescription(async () => 'Edited other description', other.id);
+  assert.equal(parseRecord(resumed.text.get(other.recordPath)!)!.description, 'Edited other description');
+  assert.match(resumed.text.get('Other.md')!, /Edited other description/);
+  assert.equal(resumed.text.get(receipt), retained);
+  assert.equal(resumed.text.get('Original.md'), divergent);
+
+  // Restoring the known projection lets the retained save complete on the next retry.
+  resumed.text.set('Original.md', projected);
+  await resumed.library.reconcileAll();
+  assert.equal(await resumed.io.exists(receipt), false);
+  await resumed.library.editDescription(async () => 'Recovered image description', sample.id);
+  assert.equal(parseRecord(resumed.text.get(sample.recordPath)!)!.description, 'Recovered image description');
+});
+
+test('record-folder rename updates healthy images after a conflicted image fails', async () => {
+  const {f, sample} = await interruptedSaveFixture();
+  await f.io.write('Other.md', '# Other\n');
+  const prepared = await f.store.prepare(await f.store.stage({bytes: JPEG, method: 'file'}, 'Other.md'));
+  const other = await f.store.describe(prepared, 'Other description');
+  const process = f.io.process;
+  f.io.process = async (path, update) => {
+    if (path === 'Added.md') throw new Error('Interrupted save');
+    await process(path, update);
+  };
+  await f.library.editDescription(async () => 'Submitted description', sample.id);
+  f.text.set('Original.md', f.text.get('Original.md')! + '\nIndependent edit');
+  f.io.process = process;
+  moveSavedRecord(f, sample.recordPath, `Archive/${sample.recordPath}`);
+  moveSavedRecord(f, other.recordPath, `Archive/${other.recordPath}`);
+  await assert.rejects(f.library.rename({path: 'Archive/image-records'}, 'image-records'), /source note changed/i);
+  assert.equal(parseRecord(f.text.get(`Archive/${other.recordPath}`)!)!.recordPath, `Archive/${other.recordPath}`);
+  assert.equal((await f.io.operationPaths()).length, 1);
+  assert.equal(f.text.has(sample.recordPath), false);
+  assert.equal(f.text.has(other.recordPath), false);
+});
+
+
+for (const damaged of ['missing', 'malformed'] as const) {
+  for (const synchronize of [false, true]) {
+    test(`${damaged} record retains its blocked hash with synchronization ${synchronize}`, async () => {
+      const {f, sample} = await interruptedSaveFixture();
+      const originalRecord = f.text.get(sample.recordPath)!;
+      const process = f.io.process;
+      f.io.process = async (path, update) => {
+        if (path === 'Added.md') throw new Error('Interrupted save');
+        await process(path, update);
+      };
+      await f.library.editDescription(async () => 'Submitted description');
+      const [receipt] = await f.io.operationPaths();
+      const retained = f.text.get(receipt);
+      if (damaged === 'missing') {
+        await f.io.remove(sample.recordPath);
+      } else {
+        f.text.set(sample.recordPath, 'Unreadable record');
+      }
+      const resumed = fixture(f.persisted);
+      await resumed.library.ready();
+      const pending = await resumed.store.stage({bytes: PNG, method: 'file'}, 'Other.md');
+      const before = new Map(resumed.text);
+      const prepare = () => synchronize ? resumed.library.prepare(pending) : resumed.store.prepare(pending);
+      await assert.rejects(prepare(), /unfinished save.*capture remains staged/i);
+      await assert.rejects(prepare(), /unfinished save.*capture remains staged/i);
+      assert.deepEqual(resumed.text, before);
+      assert.equal(resumed.text.get(receipt), retained);
+      assert.deepEqual(new Uint8Array(await resumed.io.readBinary(pending.dataPath)), new Uint8Array(PNG));
+      assert.equal(await resumed.io.exists(`images/${pending.id}.png`), false);
+      assert.equal(await resumed.io.exists(`image-records/${pending.id}.md`), false);
+      const unrelated = await resumed.library.prepare(await resumed.store.stage({bytes: JPEG, method: 'file'}, 'Other.md'));
+      assert.equal(unrelated.duplicate, false);
+      await resumed.io.write(sample.recordPath, originalRecord);
+      await resumed.library.reconcileAll();
+      assert.equal(await resumed.io.exists(receipt), false);
+      const retried = await prepare();
+      assert.equal(retried.duplicate, true);
+      assert.equal(retried.record.id, sample.id);
+    });
+  }
+}

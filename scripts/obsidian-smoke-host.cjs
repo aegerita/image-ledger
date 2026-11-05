@@ -696,12 +696,12 @@ module.exports = async (app, config) => {
         assert.equal(plugin().library.store.allRecords().length, 2);
         assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/staging')), []);
       });
-      await step('Final records and actual audit notice', async () => {
+      await step('Final records and audit report', async () => {
         receipt.records = plugin().library.store.allRecords().map(verifyRecord);
         assert.equal(fs.existsSync(path.join(root, 'image-records')), false, 'A later save recreated the old record folder');
         assert.ok(receipt.records.every(record => record.captionStatus === 'confirmed'));
         assert.equal(app.commands.executeCommandById('image-ledger:audit-images'), true);
-        receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.notice')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit notice');
+        receipt.audit = await wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.image-ledger-audit')]).map(notice => notice.textContent).find(text => text.includes('2 image records') && text.includes('0 descriptions pending') && text.includes('0 missing files') && text.includes('0 interrupted captures')), 'clean audit report');
       });
       await step('Bases save discovers copied embeds and offers explicit overwrite review', async () => {
         const original = record('sample.png');

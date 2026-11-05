@@ -1695,3 +1695,46 @@ test('record-folder rename updates healthy images after a conflicted image fails
   assert.equal(f.text.has(sample.recordPath), false);
   assert.equal(f.text.has(other.recordPath), false);
 });
+
+
+for (const damaged of ['missing', 'malformed'] as const) {
+  for (const synchronize of [false, true]) {
+    test(`${damaged} record retains its blocked hash with synchronization ${synchronize}`, async () => {
+      const {f, sample} = await interruptedSaveFixture();
+      const originalRecord = f.text.get(sample.recordPath)!;
+      const process = f.io.process;
+      f.io.process = async (path, update) => {
+        if (path === 'Added.md') throw new Error('Interrupted save');
+        await process(path, update);
+      };
+      await f.library.editDescription(async () => 'Submitted description');
+      const [receipt] = await f.io.operationPaths();
+      const retained = f.text.get(receipt);
+      if (damaged === 'missing') {
+        await f.io.remove(sample.recordPath);
+      } else {
+        f.text.set(sample.recordPath, 'Unreadable record');
+      }
+      const resumed = fixture(f.persisted);
+      await resumed.library.ready();
+      const pending = await resumed.store.stage({bytes: PNG, method: 'file'}, 'Other.md');
+      const before = new Map(resumed.text);
+      const prepare = () => synchronize ? resumed.library.prepare(pending) : resumed.store.prepare(pending);
+      await assert.rejects(prepare(), /unfinished save.*capture remains staged/i);
+      await assert.rejects(prepare(), /unfinished save.*capture remains staged/i);
+      assert.deepEqual(resumed.text, before);
+      assert.equal(resumed.text.get(receipt), retained);
+      assert.deepEqual(new Uint8Array(await resumed.io.readBinary(pending.dataPath)), new Uint8Array(PNG));
+      assert.equal(await resumed.io.exists(`images/${pending.id}.png`), false);
+      assert.equal(await resumed.io.exists(`image-records/${pending.id}.md`), false);
+      const unrelated = await resumed.library.prepare(await resumed.store.stage({bytes: JPEG, method: 'file'}, 'Other.md'));
+      assert.equal(unrelated.duplicate, false);
+      await resumed.io.write(sample.recordPath, originalRecord);
+      await resumed.library.reconcileAll();
+      assert.equal(await resumed.io.exists(receipt), false);
+      const retried = await prepare();
+      assert.equal(retried.duplicate, true);
+      assert.equal(retried.record.id, sample.id);
+    });
+  }
+}

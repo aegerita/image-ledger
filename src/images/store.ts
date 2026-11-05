@@ -257,6 +257,19 @@ export class MediaStore {
       const hash = sha256(bytes);
       // Re-read records so edits made through Bases remain authoritative.
       await this.refreshRecords(synchronize);
+      // A retained receipt still owns its bytes even when its record is missing or malformed.
+      for (const file of await this.io.operationPaths()) {
+        const content = await this.io.read(file);
+        let operation: RecordOperation;
+        try {
+          operation = parseOperation(content, file);
+        } catch {
+          continue;
+        }
+        if (operation.baseline.sha256 === hash) {
+          throw new Error(`This image has an unfinished save (${file}). Resolve it before importing the same image. Your capture remains staged.`);
+        }
+      }
       const known = this.byHash.get(hash);
 
       if (known) {

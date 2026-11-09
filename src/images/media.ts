@@ -103,26 +103,6 @@ export function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function jsonSafe(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'bigint') return value.toString();
-  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
-  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-  if (typeof value !== 'object') return undefined;
-  if (seen.has(value)) return '[circular]';
-  seen.add(value);
-  const result = Array.isArray(value)
-    ? value.map(item => jsonSafe(item, seen) ?? null)
-    : Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
-      const safe = jsonSafe(item, seen);
-      return safe === undefined ? [] : [[key, safe]];
-    }));
-  seen.delete(value);
-  return result;
-}
-
 function sourceString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
@@ -184,6 +164,24 @@ function captureTime(raw: Record<string, unknown>): Pick<
   };
 }
 
+/** Keep decimal coordinates and signed altitude in metres without the raw GPS block. */
+export function gpsMetadata(raw: Record<string, unknown>): Pick<ImageMetadata, 'latitude' | 'longitude' | 'altitude'> {
+  const gps: Pick<ImageMetadata, 'latitude' | 'longitude' | 'altitude'> = {};
+  if (typeof raw.latitude === 'number' && Number.isFinite(raw.latitude) && Math.abs(raw.latitude) <= 90) {
+    gps.latitude = raw.latitude;
+  }
+  if (typeof raw.longitude === 'number' && Number.isFinite(raw.longitude) && Math.abs(raw.longitude) <= 180) {
+    gps.longitude = raw.longitude;
+  }
+  const reference = Array.isArray(raw.GPSAltitudeRef) || raw.GPSAltitudeRef instanceof Uint8Array
+    ? raw.GPSAltitudeRef[0] : raw.GPSAltitudeRef;
+  if (typeof raw.GPSAltitude === 'number' && Number.isFinite(raw.GPSAltitude)
+    && raw.GPSAltitude >= 0 && (reference === 0 || reference === 1)) {
+    gps.altitude = reference === 1 ? -raw.GPSAltitude : raw.GPSAltitude;
+  }
+  return gps;
+}
+
 export async function extractMetadata(bytes: Uint8Array): Promise<ImageMetadata> {
   const format = detectImageFormat(bytes);
   const dimensions = format === 'png' ? pngDimensions(bytes) : jpegDimensions(bytes);
@@ -198,14 +196,13 @@ export async function extractMetadata(bytes: Uint8Array): Promise<ImageMetadata>
       exif: true,
       gps: true,
       ifd1: false,
-      xmp: true,
-      iptc: true,
+      xmp: false,
+      iptc: false,
       icc: false,
       ihdr: true,
     });
-    const safe = jsonSafe(parsed);
-    if (safe && typeof safe === 'object' && !Array.isArray(safe)) {
-      raw = safe as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      raw = parsed as Record<string, unknown>;
     }
   } catch {
     warning = 'Some source metadata could not be read. The received image bytes were preserved unchanged.';
@@ -221,7 +218,7 @@ export async function extractMetadata(bytes: Uint8Array): Promise<ImageMetadata>
     orientation,
     cameraMake: sourceString(raw.Make),
     cameraModel: sourceString(raw.Model),
-    raw,
+    ...gpsMetadata(raw),
     ...((warning || capture.warning) ? {
       warning: [warning, capture.warning].filter(Boolean).join(' '),
     } : {}),

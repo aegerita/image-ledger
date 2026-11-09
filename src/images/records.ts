@@ -1,9 +1,8 @@
 import { posix } from 'node:path';
 import type { ImageMetadata, ImageRecord } from './model';
 import { isImageId, isLegacyImageId } from './ids';
+import { gpsMetadata } from './media';
 
-const RECORD_START = '<!-- image-ledger:record -->';
-const RECORD_END = '<!-- /image-ledger:record -->';
 const SHA256 = /^[0-9a-f]{64}$/i;
 const RECORD_FIELDS = new Set([
   'schemaVersion', 'id', 'description', 'captionStatus',
@@ -38,12 +37,12 @@ export function markdownEmbed(record: ImageRecord, sourcePath: string): string {
 
 /**
  * The frontmatter makes the record editable in Bases. The structured body keeps
- * the original metadata and all recovery information portable and lossless.
+ * the selected metadata and all recovery information portable.
  */
 export function serializeRecord(record: ImageRecord): string {
   if (!isImageRecord(record)) throw new Error('Cannot serialize an invalid image record.');
   const description = normalizeDescription(record.description);
-  const portable = { ...record, description };
+  const portable = { ...record, description, metadata: withoutRawMetadata(record.metadata) };
   const scalar = (key: string, value: string | number | null) => `${key}: ${JSON.stringify(value)}`;
   const lines = [
     '---',
@@ -72,6 +71,9 @@ export function serializeRecord(record: ImageRecord): string {
     scalar('orientation', record.metadata.orientation),
     scalar('camera_make', record.metadata.cameraMake),
     scalar('camera_model', record.metadata.cameraModel),
+    scalar('latitude', portable.metadata.latitude ?? null),
+    scalar('longitude', portable.metadata.longitude ?? null),
+    scalar('altitude', portable.metadata.altitude ?? null),
     scalar('metadata_warning', record.metadata.warning ?? null),
     '---',
     '',
@@ -79,13 +81,9 @@ export function serializeRecord(record: ImageRecord): string {
     '',
     markdownEmbed(portable, record.recordPath),
     '',
-    'The description and caption status above can be edited in Bases. Other properties describe the preserved image. This record contains the information needed to rebuild the image index.',
-    '',
-    RECORD_START,
-    '```json',
-    JSON.stringify(portable, null, 2),
+    '```image-ledger',
+    JSON.stringify(portable),
     '```',
-    RECORD_END,
     '',
   ];
   // An explicit empty YAML array is distinguishable from a null property.
@@ -98,10 +96,13 @@ export function serializeRecord(record: ImageRecord): string {
 /** Read our portable record without importing or depending on Obsidian. */
 export function parseRecordSnapshot(markdown: string): ImageRecord | null {
   try {
-    const match = markdown.match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```\r?\n<!-- \/image-ledger:record -->/);
+    const match = markdown.match(/^```image-ledger\r?\n([^\r\n]+)\r?\n```(?:\r?\n|$)/m)
+      ?? markdown.match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```\r?\n<!-- \/image-ledger:record -->/);
     if (!match) return null;
     const value: unknown = JSON.parse(match[1]);
-    return isImageRecord(value) ? value : null;
+    if (!isImageRecord(value)) return null;
+    value.metadata = withoutRawMetadata(value.metadata);
+    return value;
   } catch {
     return null;
   }
@@ -260,6 +261,19 @@ function isNullableNumber(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isFinite(value));
 }
 
+/** Normalize legacy notes and recovery receipts before comparing or saving them. */
+export function withoutRawMetadata(metadata: ImageMetadata): ImageMetadata {
+  const result = { ...metadata };
+  if ('raw' in result) {
+    const raw = result.raw;
+    delete result.raw;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return { ...gpsMetadata(raw as Record<string, unknown>), ...result };
+    }
+  }
+  return result;
+}
+
 function isMetadata(value: unknown): value is ImageMetadata {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const item = value as Partial<ImageMetadata>;
@@ -272,9 +286,9 @@ function isMetadata(value: unknown): value is ImageMetadata {
     && isNullableNumber(item.orientation)
     && isNullableString(item.cameraMake)
     && isNullableString(item.cameraModel)
-    && typeof item.raw === 'object'
-    && item.raw !== null
-    && !Array.isArray(item.raw)
+    && (item.latitude === undefined || (typeof item.latitude === 'number' && Number.isFinite(item.latitude) && Math.abs(item.latitude) <= 90))
+    && (item.longitude === undefined || (typeof item.longitude === 'number' && Number.isFinite(item.longitude) && Math.abs(item.longitude) <= 180))
+    && (item.altitude === undefined || (typeof item.altitude === 'number' && Number.isFinite(item.altitude)))
     && (item.warning === undefined || typeof item.warning === 'string');
 }
 

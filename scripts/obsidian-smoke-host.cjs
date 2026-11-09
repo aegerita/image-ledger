@@ -64,12 +64,14 @@ module.exports = async (app, config) => {
   };
   const plugin = () => app.plugins.plugins['image-ledger'];
   const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-  const snapshot = file => JSON.parse(read(file).match(/<!-- image-ledger:record -->\r?\n```json\r?\n([\s\S]*?)\r?\n```/)[1]);
+  const snapshot = file => JSON.parse(read(file).match(/^```image-ledger\r?\n([^\r\n]+)\r?\n```(?:\r?\n|$)/m)[1]);
   const record = file => plugin().library.store.allRecords().find(item => item.sha256 === fixtures[file]);
   const embed = (item, note) => `![${item.description}](${path.posix.relative(path.posix.dirname(note), item.imagePath)})`;
   const verifyRecord = item => {
     assert.ok(item, 'Missing managed record');
     const saved = snapshot(item.recordPath);
+    assert.equal('raw' in saved.metadata, false);
+    assert.ok(!read(item.recordPath).includes('<!-- image-ledger:record -->'));
     assert.equal(hash(path.join(root, saved.imagePath)), saved.sha256);
     assert.equal(fs.statSync(path.join(root, saved.imagePath)).size, saved.bytes);
     assert.ok(read(saved.recordPath).includes('description: ' + JSON.stringify(saved.description)));

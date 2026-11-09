@@ -17,7 +17,7 @@ function record(id: string, description: string): ImageRecord {
     sha256: 'a'.repeat(64), bytes: 100, format: 'jpg',
     metadata: {
       capturedAt: null, captureTimeRaw: null, captureTimeOffset: null, captureTimeStatus: 'missing_from_received_file',
-      width: 2, height: 3, orientation: null, cameraMake: null, cameraModel: null, raw: {},
+      width: 2, height: 3, orientation: null, cameraMake: null, cameraModel: null,
     },
   };
 }

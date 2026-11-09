@@ -57,7 +57,9 @@ Adding the exact same image file again reuses the saved copy, even from another 
 
 Image Ledger makes no network requests and provides no upload, AI descriptions, or independent backup. Your vault's sync service may still copy its files; configure exclusions in that service if needed.
 
-Received image bytes stay unchanged. Clipboard images may already have lost original metadata; use **Import JPEG or PNG** with the original file when that matters. HEIC and Live Photo videos are not supported. Source files are never deleted.
+Record notes keep capture and camera fields, decimal GPS latitude/longitude and altitude in metres when available, plus a compact `image-ledger` data block for index rebuilding and recovery. Face regions and other raw metadata are excluded. Older records remain readable; saving them keeps these GPS fields and drops the raw metadata block.
+
+Received image bytes stay unchanged, including any embedded GPS or other metadata. Clipboard images may already have lost original metadata; use **Import JPEG or PNG** with the original file when that matters. HEIC and Live Photo videos are not supported. Source files are never deleted.
 
 ## If something goes wrong
 

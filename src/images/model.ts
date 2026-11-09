@@ -11,7 +11,9 @@ export interface ImageMetadata {
   orientation: number | null;
   cameraMake: string | null;
   cameraModel: string | null;
-  raw: Record<string, unknown>;
+  latitude?: number;
+  longitude?: number;
+  altitude?: number;
   warning?: string;
 }
 

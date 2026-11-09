@@ -1,5 +1,5 @@
 import type { ImageRecord } from './model';
-import { assertVaultPath, isImageRecord } from './records';
+import { assertVaultPath, isImageRecord, withoutRawMetadata } from './records';
 import { deletionProjection } from './embeds';
 import { isImageId } from './ids';
 
@@ -97,6 +97,8 @@ export function parseOperation(text: string, file: string): RecordOperation {
           || JSON.stringify(plan) !== JSON.stringify(deletionProjection(plan.before, source, operation.baseline))) throw new Error();
       } else if (!validProjection(plan)) throw new Error();
     }
+    operation.baseline.metadata = withoutRawMetadata(operation.baseline.metadata);
+    if (operation.target) operation.target.metadata = withoutRawMetadata(operation.target.metadata);
     return operation;
   } catch {
     throw new Error(`Invalid image save recovery receipt: ${file}. It was retained for inspection.`);

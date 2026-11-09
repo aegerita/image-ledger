@@ -1,5 +1,6 @@
 import type { ImageRecord } from './model';
-import type { EmbedRange } from './operations';
+import type { EmbedRange, NoteProjection } from './operations';
+import { markdownEmbed } from './records';
 import { posix } from 'node:path';
 import { parser } from '@lezer/markdown';
 
@@ -91,4 +92,99 @@ export function findManagedImage(text: string, sourcePath: string, records: Imag
 
 function referenceLabel(text: string): string {
   return text.trim().replace(/\s+/gu, ' ').toUpperCase();
+}
+
+/** Delete only parsed embeds and exact generated details links, leaving surrounding text intact. */
+export function deletionProjection(text: string, sourcePath: string, record: ImageRecord): NoteProjection {
+  const beforeRanges: EmbedRange[] = managedImageEmbeds(text, sourcePath, [record], true)
+    .map(({from, to}) => ({from, to}));
+  const target = markdownEmbed({...record, imagePath: record.recordPath}, sourcePath);
+  const details = '[Image details]' + target.slice(target.lastIndexOf('](') + 1);
+  const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
+  const offset = frontmatter?.[0].length ?? 0;
+  parser.parse(text.slice(offset)).iterate({
+    enter(node) {
+      if (node.name === 'Image') return false;
+      if (node.name === 'Link' && text.slice(offset + node.from, offset + node.to) === details) {
+        beforeRanges.push({from: offset + node.from, to: offset + node.to});
+        return false;
+      }
+    },
+  });
+  beforeRanges.sort((left, right) => left.from - right.from);
+  const plan: NoteProjection = {before: text, after: '', beforeRanges, ranges: []};
+  let cursor = 0;
+  for (const range of beforeRanges) {
+    plan.after += text.slice(cursor, range.from);
+    plan.ranges.push({from: plan.after.length, to: plan.after.length});
+    cursor = range.to;
+  }
+  plan.after += text.slice(cursor);
+  return plan;
+}
+
+/** Find wiki and ordinary links even before Obsidian has indexed a changed note. */
+export function deletionBlockers(text: string, sourcePath: string, record: ImageRecord, resolveWiki: (link: string) => string | undefined): string[] {
+  const plan = deletionProjection(text, sourcePath, record);
+  const excluded: EmbedRange[] = [];
+  const blocked: string[] = [];
+  const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
+  const offset = frontmatter?.[0].length ?? 0;
+  const managed = (target: string | undefined) => target === record.imagePath || target === record.recordPath;
+  const resolve = (url: string) => {
+    const relative = resolveImageTarget(url, sourcePath);
+    if (managed(relative)) return relative;
+    try {
+      return resolveWiki(decodeURIComponent(url.replace(/^<|>$/g, '')));
+    } catch {
+      return undefined;
+    }
+  };
+  const tree = parser.parse(text.slice(offset));
+  const references = new Map<string, string | undefined>();
+  tree.iterate({
+    enter(node) {
+      if (node.name !== 'LinkReference') return;
+      const label = node.node.getChild('LinkLabel');
+      const url = node.node.getChild('URL');
+      if (!label || !url) return;
+      const key = referenceLabel(text.slice(offset + label.from + 1, offset + label.to - 1));
+      if (!references.has(key)) references.set(key, resolve(text.slice(offset + url.from, offset + url.to)));
+      return false;
+    },
+  });
+  tree.iterate({
+    enter(node) {
+      const from = offset + node.from;
+      const to = offset + node.to;
+      if (['FencedCode', 'CodeBlock', 'InlineCode', 'HTMLBlock', 'Comment'].includes(node.name)) {
+        excluded.push({from, to});
+        return false;
+      }
+      if (node.name !== 'Link' && node.name !== 'Image') return;
+      const url = node.node.getChild('URL');
+      let target = url ? resolve(text.slice(offset + url.from, offset + url.to)) : undefined;
+      if (!url) {
+        const label = node.node.getChild('LinkLabel');
+        const close = node.node.getChildren('LinkMark').at(-1);
+        if (close) {
+          const key = label && label.to - label.from > 2
+            ? text.slice(offset + label.from + 1, offset + label.to - 1)
+            : text.slice(from + (node.name === 'Image' ? 2 : 1), offset + close.from);
+          target = references.get(referenceLabel(key));
+        }
+      }
+      if (managed(target)
+        && !plan.beforeRanges.some(range => range.from === from && range.to === to)) {
+        blocked.push(text.slice(from, to));
+      }
+      if (node.name === 'Image') return false;
+    },
+  });
+  for (const match of text.matchAll(/!?\[\[([^\]\n]+)\]\]/g)) {
+    if (match.index < offset || excluded.some(range => range.from <= match.index && range.to >= match.index + match[0].length)) continue;
+    const target = match[1].split(/[|#]/)[0];
+    if (managed(resolveWiki(target))) blocked.push(match[0]);
+  }
+  return blocked;
 }

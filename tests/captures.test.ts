@@ -45,6 +45,7 @@ function fixture(describe: (record: ImageRecord) => Promise<string | null> = asy
   const bytes = new Map<string, Uint8Array>();
   const folders = new Set<string>();
   const io: VaultIO = {
+    checkTrash: () => {},
     reserveId: async id => {
       const reservation = `.image-ledger/ids/${id}`;
       if (text.has(reservation)) return false;
@@ -71,7 +72,9 @@ function fixture(describe: (record: ImageRecord) => Promise<string | null> = asy
     writeBinary: async (path, value) => { bytes.set(path, value.slice()); },
     mkdir: async path => { folders.add(path); },
     remove: async path => { text.delete(path); bytes.delete(path); },
+    trash: async path => { text.delete(path); bytes.delete(path); },
     recordPaths: async () => [...text.keys()].filter(path => /(?:^|\/)image-records\/[^/]+\.md$/.test(path)),
+    mediaPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => /\.(?:jpg|png|xmp)$/.test(path) && !path.startsWith('.')),
     pendingPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => path.startsWith('.image-ledger/staging/')),
     operationPaths: async () => [...text.keys()].filter(path => /^\.image-ledger\/operations\/[^/]+\.json$/.test(path)),
   };

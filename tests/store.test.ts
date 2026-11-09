@@ -22,6 +22,7 @@ async function fixture(storageLayout: StorageLayout = 'note-year', newId?: () =>
     return result;
   };
   const io: VaultIO = {
+    checkTrash: () => {},
     reserveId: async id => {
       const files = await walk('');
       if (files.some(file => path.posix.basename(file).split('.')[0].toLowerCase() === id)) return false;
@@ -45,7 +46,9 @@ async function fixture(storageLayout: StorageLayout = 'note-year', newId?: () =>
     writeBinary: async (relative, bytes) => {await writeFile(path.join(root, relative), bytes);},
     mkdir: async relative => {await mkdir(path.join(root, relative), {recursive: true});},
     remove: async relative => {await unlink(path.join(root, relative)).catch(error => {if (error.code !== 'ENOENT') throw error;});},
+    trash: async relative => {await unlink(path.join(root, relative));},
     recordPaths: async () => (await walk('')).filter(p => /(?:^|\/)image-records\/[^/]+\.md$/.test(p)),
+    mediaPaths: async () => (await walk('')).filter(path => /\.(?:jpg|png|xmp)$/.test(path) && !path.startsWith('.')),
     pendingPaths: async () => walk('.image-ledger/staging'),
     operationPaths: async () => walk('.image-ledger/operations'),
   };

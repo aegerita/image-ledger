@@ -4,7 +4,7 @@ import type { Extension } from '@codemirror/state';
 import { randomUUID } from 'node:crypto';
 import { addAnchor, insertionAnchors, removeAnchor } from './anchors';
 import { assertVaultPath, markdownEmbed } from '../images/records';
-import { escapePattern, imageTargetPattern, managedImageEmbeds } from '../images/embeds';
+import { deletionBlockers, deletionProjection, escapePattern, imageTargetPattern, managedImageEmbeds } from '../images/embeds';
 import type { ImageRecord } from '../images/model';
 import type { NoteProjection, ProjectionJournal } from '../images/operations';
 import type { Settings } from '../settings';
@@ -21,6 +21,11 @@ export interface CaptureTarget {
   readonly path: string;
   insert(records: ImageRecord[]): Promise<void>;
   release(): void;
+}
+
+export interface DeletePreview {
+  notes: Record<string, NoteProjection>;
+  blocked: string[];
 }
 
 export class NoteImages {
@@ -211,6 +216,68 @@ export class NoteImages {
     return views.find(view => view.file?.path === sourcePath);
   }
 
+  async deletionPreview(record: ImageRecord): Promise<DeletePreview> {
+    const preview: DeletePreview = {notes: Object.create(null), blocked: []};
+    // Scan saved Markdown and live editors; the link index can lag behind a copied embed.
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (file.path === record.recordPath) continue;
+      const saved = await this.app.vault.read(file);
+      const text = this.noteView(file.path)?.editor.getValue() ?? saved;
+      const plan = deletionProjection(text, file.path, record);
+      const resolve = (link: string) => this.app.metadataCache.getFirstLinkpathDest(link, file.path)?.path;
+      const blockers = deletionBlockers(text, file.path, record, resolve);
+      if (text !== saved && (plan.beforeRanges.length || blockers.length
+        || deletionProjection(saved, file.path, record).beforeRanges.length
+        || deletionBlockers(saved, file.path, record, resolve).length)) {
+        preview.blocked.push(`${file.path}: unsaved or conflicting edits; save or reload the note before deleting`);
+      }
+      if (plan.beforeRanges.length) {
+        try {
+          assertVaultPath(file.path);
+          preview.notes[file.path] = plan;
+        } catch {
+          preview.blocked.push(`${file.path}: unsupported note path`);
+        }
+      }
+      for (const reference of blockers) {
+        preview.blocked.push(`${file.path}: unsupported reference ${reference}`);
+      }
+      for (const link of this.app.metadataCache.getFileCache(file)?.frontmatterLinks ?? []) {
+        const target = this.app.metadataCache.getFirstLinkpathDest(link.link, file.path)?.path;
+        if (target === record.imagePath || target === record.recordPath) {
+          preview.blocked.push(`${file.path}: property link ${link.original}`);
+        }
+      }
+    }
+    for (const [source, targets] of Object.entries(this.app.metadataCache.resolvedLinks)) {
+      if (!source.endsWith('.md') && (targets[record.imagePath] || targets[record.recordPath])) {
+        preview.blocked.push(`${source}: unsupported reference outside Markdown`);
+      }
+    }
+    return preview;
+  }
+
+  async removeEmbeds(record: ImageRecord, journal: ProjectionJournal): Promise<void> {
+    const current = await this.deletionPreview(record);
+    if (current.blocked.length) throw new Error(current.blocked.join('\n'));
+    for (const [source, plan] of Object.entries(current.notes)) {
+      if (!Object.hasOwn(journal.notes, source) || journal.notes[source].before !== plan.before) {
+        throw new Error(`Image references changed in ${source}. The deletion receipt was retained.`);
+      }
+    }
+    // Check every baseline before applying any more changes during recovery.
+    for (const [source, plan] of Object.entries(journal.notes)) {
+      const file = this.sourceNote(source);
+      const content = file && await this.app.vault.read(file);
+      if (content !== plan.before && content !== plan.after) throw noteProjectionConflict(source);
+      const editor = this.noteView(source)?.editor.getValue();
+      if (editor !== undefined && editor !== plan.before && editor !== plan.after) throw noteProjectionConflict(source);
+    }
+    for (const [source, plan] of Object.entries(journal.notes)) {
+      await this.applyNoteProjection(source, plan);
+    }
+  }
+
   private async applyNoteProjection(sourcePath: string, plan: NoteProjection): Promise<void> {
     const file = this.sourceNote(sourcePath);
     if (!file) throw noteProjectionConflict(sourcePath);
@@ -316,7 +383,7 @@ export class NoteImages {
 }
 
 function noteProjectionConflict(sourcePath: string): Error {
-  return new Error(`A source note changed during the description save or no longer exists: ${sourcePath}. Its text and the unfinished save receipt were preserved.`);
+  return new Error(`A source note changed during the image operation or no longer exists: ${sourcePath}. Its text and the unfinished save receipt were preserved.`);
 }
 
 function skippedMarkdown(path: string, text: string, from: number): SkippedEmbed {

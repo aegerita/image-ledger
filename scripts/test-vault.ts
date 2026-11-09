@@ -30,7 +30,7 @@ export async function createTestVault(destination?: string): Promise<string> {
   for (const [name, bytes] of Object.entries(fixtures)) await writeFile(path.join(vault, 'fixtures', name), bytes);
   await writeFile(path.join(vault, '.obsidian/community-plugins.json'), JSON.stringify(['image-ledger']));
   await writeFile(path.join(vault, '.obsidian/core-plugins.json'), JSON.stringify(['file-explorer', 'switcher', 'command-palette', 'bases']));
-  await writeFile(path.join(vault, '.obsidian/app.json'), JSON.stringify({livePreview: true}));
+  await writeFile(path.join(vault, '.obsidian/app.json'), JSON.stringify({livePreview: true, trashOption: 'local'}));
   for (const note of [sourceNote, otherNote]) await writeFile(path.join(vault, note), `# Synthetic media test\n\nOnly generated fixtures belong in this vault.\n\n`);
   await writeFile(path.join(vault, 'README.md'), '# Image Ledger test vault\n\nSynthetic data only. No personal contents or settings were copied.\nDefault smoke test: npm run test:obsidian (Obsidian host API only). Computer use is prohibited. See the repository AGENTS.md and TESTING.md.\n');
   await writeFile(path.join(vault, markerName), JSON.stringify({version: 1, fixtures: Object.fromEntries(Object.entries(fixtures).map(([name, bytes]) => [name, sha256(bytes)]))}, null, 2) + '\n');

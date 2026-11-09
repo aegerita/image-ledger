@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { DataWriteOptions, TFile as HostFile, Vault } from 'obsidian';
@@ -39,6 +39,7 @@ async function fixture() {
   };
   const vault = {
     adapter,
+    getConfig: () => 'system',
     getFiles: () => [...indexed.values()],
     getAbstractFileByPath: (relative: string) => indexed.get(relative) ?? null,
     createBinary: async (relative: string, data: ArrayBuffer, options?: DataWriteOptions) => {
@@ -77,7 +78,7 @@ async function fixture() {
     },
   } as unknown as Vault;
   return {
-    io: createVaultIO(vault), root, bytes, indexed, created, removed, renamed, faults,
+    io: createVaultIO(vault, {trashFile: file => vault.delete(file)}), root, bytes, indexed, created, removed, renamed, faults,
     cleanup: () => rm(root, {recursive: true, force: true}),
   };
 }
@@ -270,16 +271,90 @@ test('record processing uses the host atomic callback and refuses missing record
   adapter.getBasePath = () => '/synthetic-vault';
   const vault = {
     adapter,
+    getConfig: () => 'system',
     getAbstractFileByPath: (relative: string) => relative === file.path ? file : null,
     process: async (target: HostFile, update: (value: string) => string) => {
       assert.equal(target, file);
       content = update(content);
     },
   } as unknown as Vault;
-  const io = createVaultIO(vault);
+  const io = createVaultIO(vault, {trashFile: file => vault.delete(file)});
 
   await io.process(file.path, current => `${current} plus update`);
   assert.equal(content, 'Newer saved content plus update');
   await assert.rejects(io.process('image-records/missing.md', () => 'Replacement'), /no longer exists/);
   assert.equal(content, 'Newer saved content plus update');
+});
+
+test('managed deletion delegates to the host Trash API and rejects missing or escaping paths', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-trash-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  await mkdir(path.join(root, 'images'));
+  await writeFile(path.join(root, 'images/012345abcdef.png'), payload);
+  const file = Object.assign(new TFile(), {path: 'images/012345abcdef.png'});
+  const trashed: HostFile[] = [];
+  const adapter = new FileSystemAdapter();
+  adapter.getBasePath = () => root;
+  const vault = {
+    adapter,
+    getConfig: () => 'system',
+    getAbstractFileByPath: (path: string) => path === file.path ? file : null,
+  } as unknown as Vault;
+  const io = createVaultIO(vault, {trashFile: async file => { trashed.push(file as HostFile); }});
+  await io.trash(file.path);
+  assert.deepEqual(trashed, [file]);
+  await assert.rejects(io.trash('images/missing.png'), /unavailable/);
+  await assert.rejects(io.trash('../outside.png'), /Invalid vault/);
+  assert.equal(trashed.length, 1);
+});
+
+test('Trash refuses permanent deletion and unknown destination settings', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-trash-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  await mkdir(path.join(root, 'images'));
+  await writeFile(path.join(root, 'images/012345abcdef.png'), payload);
+  const file = Object.assign(new TFile(), {path: 'images/012345abcdef.png'});
+  const adapter = new FileSystemAdapter();
+  adapter.getBasePath = () => root;
+  let option: unknown = 'none';
+  let calls = 0;
+  const vault = {
+    adapter,
+    getConfig: () => option,
+    getAbstractFileByPath: () => file,
+  } as unknown as Vault;
+  const io = createVaultIO(vault, {trashFile: async () => { calls++; }});
+  for (const invalid of ['none', 'unknown', undefined]) {
+    option = invalid;
+    await assert.rejects(io.trash(file.path), /Deleted files|Trash/);
+  }
+  assert.equal(calls, 0);
+  for (const valid of ['system', 'local']) {
+    option = valid;
+    await io.trash(file.path);
+  }
+  assert.equal(calls, 2);
+});
+
+test('Trash refuses symlinks to files outside the vault', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-trash-link-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const vaultPath = path.join(root, 'vault');
+  const external = path.join(root, 'external.png');
+  await mkdir(vaultPath);
+  await writeFile(external, payload);
+  await symlink(external, path.join(vaultPath, '012345abcdef.png'));
+  const file = Object.assign(new TFile(), {path: '012345abcdef.png'});
+  const adapter = new FileSystemAdapter();
+  adapter.getBasePath = () => vaultPath;
+  let calls = 0;
+  const vault = {
+    adapter,
+    getConfig: () => 'local',
+    getAbstractFileByPath: () => file,
+  } as unknown as Vault;
+  const io = createVaultIO(vault, {trashFile: async () => { calls++; }});
+  await assert.rejects(io.trash(file.path), /outside this vault/);
+  assert.equal(calls, 0);
+  assert.deepEqual(new Uint8Array(await readFile(external)), payload);
 });

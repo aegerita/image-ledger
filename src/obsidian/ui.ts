@@ -2,7 +2,9 @@ import { Modal, PluginSettingTab, Setting, TFile, type App } from 'obsidian';
 import type ImageLedgerPlugin from '../main';
 import { normalizeDescription } from '../images/records';
 import { isStorageLayout } from '../settings';
-import type { SkippedEmbed } from './notes';
+import type { DeletePreview, SkippedEmbed } from './notes';
+import { managedImageEmbeds } from '../images/embeds';
+import type { DeletionAssets } from '../images/operations';
 import type { ImageAudit } from '../images/store';
 import type { ImageRecord } from '../images/model';
 
@@ -105,6 +107,73 @@ export class RecordPicker extends Modal {
     input.addEventListener('input', render);
     render();
     input.focus();
+  }
+}
+
+export class DeleteImageModal extends Modal {
+  private confirmed = false;
+
+  constructor(
+    app: App,
+    private record: ImageRecord,
+    private preview: DeletePreview,
+    private assets: DeletionAssets,
+    private resolve: (confirmed: boolean) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText('Delete image everywhere?');
+    this.contentEl.addClass('image-ledger-description');
+    const image = this.app.vault.getAbstractFileByPath(this.record.imagePath);
+    if (image instanceof TFile) {
+      this.contentEl.createEl('img', {
+        attr: {src: this.app.vault.getResourcePath(image), alt: this.record.description},
+      });
+    }
+    this.contentEl.createEl('p', {text: this.record.description});
+    this.contentEl.createEl('p', {text: 'Remove these embeds and generated Image details links. Other note text stays unchanged.'});
+    const notes = this.contentEl.createEl('ul');
+    for (const [path, plan] of Object.entries(this.preview.notes)) {
+      const count = managedImageEmbeds(plan.before, path, [this.record], true).length;
+      notes.createEl('li', {text: `${path}: ${count} embeds, ${plan.beforeRanges.length - count} details links`});
+    }
+    if (!Object.keys(this.preview.notes).length) notes.createEl('li', {text: 'No supported references found.'});
+    this.contentEl.createEl('p', {text: 'Delete these managed files using Obsidian’s Deleted files setting:'});
+    const files = this.contentEl.createEl('ul');
+    for (const path of [this.record.imagePath, this.record.sidecarPath, this.record.recordPath]) {
+      files.createEl('li', {text: this.assets.files.includes(path) ? path : `${path} (already missing)`});
+    }
+    if (this.assets.captures.length) {
+      this.contentEl.createEl('p', {text: `Cancel ${this.assets.captures.length} staged captures and remove their temporary copies:`});
+      const staged = this.contentEl.createEl('ul');
+      for (const capture of this.assets.captures) {
+        staged.createEl('li', {text: `.image-ledger/staging/${capture.id}.${capture.format} and ${capture.id}.json`});
+      }
+    }
+    this.contentEl.createEl('p', {text: 'Original source files, Git history, backups and external copies are excluded. Restored files will not rejoin the image library.'});
+    for (const reason of this.preview.blocked) {
+      this.contentEl.createEl('p', {text: `Resolve before deleting: ${reason}`, cls: 'image-ledger-validation'});
+    }
+    let cancel!: HTMLButtonElement;
+    new Setting(this.contentEl)
+      .addButton(button => {
+        cancel = button.buttonEl;
+        button.setButtonText('Cancel').onClick(() => this.close());
+      })
+      .addButton(button => button.setButtonText('Delete image everywhere').setWarning()
+        .setDisabled(this.preview.blocked.length > 0)
+        .onClick(() => {
+          this.confirmed = true;
+          this.close();
+        }));
+    cancel.focus();
+  }
+
+  onClose(): void {
+    this.resolve(this.confirmed);
+    this.contentEl.empty();
   }
 }
 

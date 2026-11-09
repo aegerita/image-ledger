@@ -712,7 +712,7 @@ test('an immediate source-note rename preserves newer Bases edits and unrelated 
     ...sample,
     sourceName: 'Updated source.png',
     sourceNotes: ['Original.md', 'Added.md'],
-    metadata: {...sample.metadata, raw: {reviewed: true}},
+    metadata: {...sample.metadata, cameraModel: 'Reviewed camera'},
   };
   f.text.set(sample.recordPath, serializeRecord(updated).replace('description: "Description A"', 'description: "Description B"'));
 
@@ -802,7 +802,7 @@ test('delayed reconciliation cannot replace a newer saved description or record 
     ...sample,
     sourceName: 'Latest source.png',
     sourceNotes: ['Original.md', 'Added.md'],
-    metadata: {...sample.metadata, raw: {editedWhileReconciling: true}},
+    metadata: {...sample.metadata, cameraModel: 'Updated camera'},
   };
   f.text.set(sample.recordPath, serializeRecord(latest).replace('description: "Original description"', 'description: "Description B"'));
   const newer = f.library.reconcileAll();
@@ -1191,7 +1191,7 @@ for (const boundary of ['first note saved', 'sidecar written', 'record committed
   });
 }
 
-for (const boundary of ['record committed', 'receipt cleanup'] as const) {
+for (const boundary of ['record committed', 'receipt cleanup', 'legacy receipt cleanup'] as const) {
   test(`restart preserves an offline caption revert after ${boundary}`, async () => {
     const {f, sample, originals} = await interruptedSaveFixture();
     const failure = new Error(`Interrupted after ${boundary}`);
@@ -1202,18 +1202,35 @@ for (const boundary of ['record committed', 'receipt cleanup'] as const) {
       if (boundary === 'record committed' && path === sample.recordPath) throw failure;
     };
     f.io.remove = async path => {
-      if (boundary === 'receipt cleanup' && path.startsWith('.image-ledger/operations/')) throw failure;
+      if (boundary.endsWith('receipt cleanup') && path.startsWith('.image-ledger/operations/')) throw failure;
       await remove(path);
     };
     await f.library.editDescription(async () => 'Submitted description');
     assert.deepEqual(f.errors, [failure]);
     assert.equal((await f.io.operationPaths()).length, 1);
-    const committed = f.text.get(sample.recordPath)!;
+    let committed = f.text.get(sample.recordPath)!;
+    if (boundary === 'legacy receipt cleanup') {
+      const receiptPath = (await f.io.operationPaths())[0];
+      const receipt = JSON.parse(f.text.get(receiptPath)!);
+      for (const record of [receipt.baseline, receipt.target]) {
+        record.metadata.raw = {latitude: 12.5, longitude: -45.25, GPSAltitude: 25, GPSAltitudeRef: [1], Regions: {RegionList: []}};
+      }
+      f.text.set(receiptPath, JSON.stringify(receipt));
+      const block = ['<!-- image-ledger:record -->', '```json', JSON.stringify(receipt.target, null, 2), '```', '<!-- /image-ledger:record -->'].join('\n');
+      committed = committed.replace(/```image-ledger\n[^\n]+\n```/, () => block);
+    }
     assert.equal(parseRecordSnapshot(committed)!.description, 'Submitted description');
     f.text.set(sample.recordPath, committed
       .replace('description: "Submitted description"', 'description: "Original description"')
       .replace('  - "[[Added]]"\n', ''));
-    const expected = {...sample, sourceNotes: ['Original.md']};
+    const expected = {
+      ...sample,
+      sourceNotes: ['Original.md'],
+      metadata: {
+        ...sample.metadata,
+        ...(boundary === 'legacy receipt cleanup' ? {latitude: 12.5, longitude: -45.25, altitude: -25} : {}),
+      },
+    };
     assert.deepEqual(parseRecord(f.text.get(sample.recordPath)!), expected);
     const removedNote = f.text.get('Added.md');
 

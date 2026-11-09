@@ -33,7 +33,6 @@ function fixture(overrides: Partial<ImageRecord> = {}): ImageRecord {
       orientation: 1,
       cameraMake: 'Apple',
       cameraModel: 'iPhone',
-      raw: { DateTimeOriginal: '2026-10-16T23:07:22.000Z', GPSLatitude: 43.6, unusual: 'Quote " and ]\nline', array: [1, 2, 3] },
     },
     ...overrides,
   };
@@ -123,12 +122,48 @@ test('managed image lookup does not select nested images inside alt text', () =>
   assert.deepEqual(managedImageEmbeds(text, 'Note.md', [outer, inner]).map(embed => embed.record.id), [outer.id]);
 });
 
-test('portable record round trips every field, preserving raw metadata', () => {
+test('portable record round trips selected metadata in a compact data block', () => {
   const record = fixture();
+  const note = serializeRecord(record);
+  assert.match(note, /\n```image-ledger\n[^\r\n]+\n```\n$/);
+  assert.doesNotMatch(note, /"raw"|<!--|The description and caption status above/);
   assert.deepEqual(parseRecord(serializeRecord(record)), record);
   assert.match(serializeRecord(record), /local_file: "\[\[2026\/images\//);
   assert.match(serializeRecord(record), /source_notes:\n  - "\[\[2026\/October\/17\]\]"/);
   assert.match(serializeRecord(record), /capture_time_status: "source_offset"/);
+});
+
+test('legacy records load without raw EXIF and save in the compact format', () => {
+  const record = fixture();
+  const legacy = {...record, metadata: {...record.metadata, raw: {
+    latitude: 12.5, longitude: -45.25, GPSAltitude: 25, GPSAltitudeRef: [0],
+    Regions: {RegionList: [{Type: 'Face', Area: {x: 0.5, y: 0.5}}]},
+  }}};
+  const expected = {...record, metadata: {...record.metadata, latitude: 12.5, longitude: -45.25, altitude: 25}};
+  const block = ['<!-- image-ledger:record -->', '```json', JSON.stringify(legacy, null, 2), '```', '<!-- /image-ledger:record -->'].join('\n');
+  const note = serializeRecord(record).replace(/```image-ledger\n[^\n]+\n```/, () => block);
+  for (const text of [note, note.replaceAll('\n', '\r\n')]) {
+    assert.deepEqual(parseRecordSnapshot(text), expected);
+    assert.deepEqual(parseRecord(text), expected);
+    const saved = serializeRecord(parseRecord(text)!);
+    assert.deepEqual(parseRecord(saved), expected);
+    assert.doesNotMatch(saved, /"raw"|Regions|RegionList|<!--/);
+    assert.match(saved, /latitude: 12.5\nlongitude: -45.25\naltitude: 25/);
+  }
+  assert.deepEqual(parseRecord(serializeRecord(legacy)), expected);
+  assert.equal(legacy.metadata.raw.Regions.RegionList[0].Type, 'Face', 'Serialization must not mutate its input');
+  assert.equal(parseRecordSnapshot(note.replace('<!-- /image-ledger:record -->', '<!-- /other:record -->')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"width": 4032', '"width": "bad"')), null);
+});
+
+test('record validation rejects invalid GPS fields and preserves selected coordinates over legacy raw values', () => {
+  const record = fixture();
+  for (const coordinates of [{latitude: 91}, {longitude: -181}, {altitude: Infinity}]) {
+    assert.throws(() => serializeRecord({...record, metadata: {...record.metadata, ...coordinates}}), /invalid image record/);
+  }
+  const metadata = {...record.metadata, latitude: 0, longitude: 0, altitude: -10};
+  const legacy = {...record, metadata: {...metadata, raw: {latitude: 12.5, longitude: -45.25, GPSAltitude: 25, GPSAltitudeRef: 0}}};
+  assert.deepEqual(parseRecord(serializeRecord(legacy))?.metadata, metadata);
 });
 
 test('image IDs generate lowercase short hex and accept unchanged legacy UUIDs', () => {
@@ -165,13 +200,13 @@ test('short image records round trip, embed, and serialize literal XMP identifie
   assert.throws(() => serializeRecord({...record, id: 'not-an-image-id'}), /invalid image record/);
 });
 
-test('snapshot parser accepts only current records and matching markers', () => {
+test('snapshot parser accepts only current records and matching fences', () => {
   const note = serializeRecord(fixture());
-  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion": 2', '"schemaVersion": 99')), null);
-  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion": 2,', '"schemaVersion": 2, "unknownField": true,')), null);
-  assert.equal(parseRecordSnapshot(note.replace('<!-- image-ledger:record -->', '<!-- other:record -->')), null);
-  assert.equal(parseRecordSnapshot(note.replace('<!-- /image-ledger:record -->', '<!-- /other:record -->')), null);
-  assert.equal(parseRecordSnapshot(note.replace('"sourceNotes": [', '"unknownNotes": [')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion":2', '"schemaVersion":99')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"schemaVersion":2,', '"schemaVersion":2, "unknownField": true,')), null);
+  assert.equal(parseRecordSnapshot(note.replace('```image-ledger', '```json')), null);
+  assert.equal(parseRecordSnapshot(note.replace('\n```\n', '\n~~~\n')), null);
+  assert.equal(parseRecordSnapshot(note.replace('"sourceNotes":[', '"unknownNotes": [')), null);
 });
 
 test('captions normalize whitespace and reject empty values', () => {
@@ -232,11 +267,11 @@ test('manually folded captions stay one line; blank captions are rejected', () =
 test('parser rejects malformed or mismatched identity and unsafe paths', () => {
   const note = serializeRecord(fixture());
   assert.equal(parseRecord('ordinary Markdown'), null);
-  assert.equal(parseRecord(note.replace('"sha256": "' + 'a'.repeat(64) + '"', '"sha256": "bad"')), null);
+  assert.equal(parseRecord(note.replace('"sha256":"' + 'a'.repeat(64) + '"', '"sha256":"bad"')), null);
   assert.equal(parseRecord(note.replace(`image_id: "${id}"`, 'image_id: "not-a-uuid"')), null);
   assert.equal(parseRecord(note.replace('type: "image-ledger-image"', 'type: "other"')), null);
-  assert.equal(parseRecord(note.replace('"imagePath": "2026/images/', '"imagePath": "../images/')), null);
-  assert.equal(parseRecord(note.replace('"recordPath": "2026/image-records/', '"recordPath": "/outside/')), null);
+  assert.equal(parseRecord(note.replace('"imagePath":"2026/images/', '"imagePath":"../images/')), null);
+  assert.equal(parseRecord(note.replace('"recordPath":"2026/image-records/', '"recordPath":"/outside/')), null);
   assert.equal(parseRecord(note.replace('  - "[[2026/October/17]]"', '  - "[[../outside]]"')), null);
   assert.throws(() => serializeRecord(fixture({ sidecarPath: '../bad.xmp' })), /invalid image record/);
   assert.throws(() => markdownEmbed(fixture(), '../outside.md'), /traversal/);

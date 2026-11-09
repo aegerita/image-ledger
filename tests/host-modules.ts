@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 type HostModules = {
   createVaultIO: typeof import('../src/obsidian/vault-io').createVaultIO;
   RecordLibrary: typeof import('../src/obsidian/library').RecordLibrary;
+  DeleteImageModal: typeof import('../src/obsidian/ui').DeleteImageModal;
   RecordPicker: typeof import('../src/obsidian/ui').RecordPicker;
   NoteImages: typeof import('../src/obsidian/notes').NoteImages;
   MediaStore: typeof import('../src/images/store').MediaStore;
@@ -18,7 +19,7 @@ export async function loadHostModules(): Promise<HostModules> {
       contents: `
         export {createVaultIO} from './src/obsidian/vault-io';
         export {RecordLibrary} from './src/obsidian/library';
-        export {RecordPicker} from './src/obsidian/ui';
+        export {RecordPicker, DeleteImageModal} from './src/obsidian/ui';
         export {NoteImages} from './src/obsidian/notes';
         export {MediaStore} from './src/images/store';
         export {TFile, FileSystemAdapter} from 'obsidian';

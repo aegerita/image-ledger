@@ -4,7 +4,7 @@ import { findManagedImage, managedImageEmbeds } from '../images/embeds';
 import { MediaStore, type PendingCapture, type PreparedCapture, type SynchronizeRecord } from '../images/store';
 import type { ProjectionJournal } from '../images/operations';
 import { NoteImages, type SkippedEmbed } from './notes';
-import { DescriptionSaveReview, ImageAuditModal, RecordPicker } from './ui';
+import { DeleteImageModal, DescriptionSaveReview, ImageAuditModal, RecordPicker } from './ui';
 
 export class RecordLibrary {
   private initialized?: Promise<void>;
@@ -17,6 +17,7 @@ export class RecordLibrary {
       {
         failed: (error: Error) => this.report(error),
         references: (record: ImageRecord) => this.notes.references(record).paths,
+        remove: (record: ImageRecord, journal: ProjectionJournal) => this.notes.removeEmbeds(record, journal),
         saved: (record: ImageRecord, journal: ProjectionJournal) => {
           const report = this.notes.saveReport(journal, record);
           const summary = `Updated ${report.updated} embeds in ${report.notes} notes. Skipped ${report.skipped.length}.`;
@@ -57,6 +58,7 @@ export class RecordLibrary {
     readonly store: MediaStore,
     private notes: NoteImages,
     private report: (error: unknown) => void,
+    private enqueue: (action: () => Promise<void>) => unknown,
   ) {}
 
   ready(): Promise<void> {
@@ -114,9 +116,35 @@ export class RecordLibrary {
 
   private addRecordMenu(menu: Menu, record: ImageRecord, describe: (record: ImageRecord) => Promise<string | null>): void {
     menu.addItem(item => item
-      .setTitle('Edit image description')
+      .setTitle('Image Ledger: Edit image description')
       .setIcon('pencil')
       .onClick(() => this.editDescription(describe, record.id)));
+    menu.addItem(item => item
+      .setTitle('Image Ledger: Delete image everywhere...')
+      .setIcon('trash-2')
+      .onClick(() => this.deleteImage(record.id)));
+  }
+
+  async deleteImage(recordId?: string): Promise<void> {
+    await this.selectRecord(async selected => {
+      await this.enqueue(async () => {
+        await this.store.refresh(this.synchronize);
+        const record = this.store.allRecords().find(record => record.id === selected.id);
+        if (!record) throw new Error('This image record is no longer available.');
+        const preview = await this.notes.deletionPreview(record);
+        const assets = await this.store.deletionAssets(record);
+        const confirmed = await new Promise<boolean>(resolve => {
+          new DeleteImageModal(this.app, record, preview, assets, resolve).open();
+        });
+        if (!confirmed || preview.blocked.length) return;
+        const current = await this.notes.deletionPreview(record);
+        if (JSON.stringify(current) !== JSON.stringify(preview)) {
+          throw new Error('Image references changed. Open the deletion preview again.');
+        }
+        await this.store.deleteImage(record, preview.notes, assets, this.synchronize);
+        new Notice('Image deleted from this vault.');
+      });
+    }, recordId);
   }
 
   async editDescription(describe: (record: ImageRecord) => Promise<string | null>, recordId?: string): Promise<void> {

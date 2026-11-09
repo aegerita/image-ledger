@@ -324,3 +324,27 @@ test('reference inspection respects first definitions, code exclusions and unres
   const matches = managedImageEmbeds(text, 'Note.md', [record], true);
   assert.deepEqual(matches.map(match => text.slice(match.from, match.to)), ['![Real][local]']);
 });
+
+test('deletion receipts cannot remove prose or alter surviving note text', async () => {
+  const {deletionProjection, deletionBlockers} = await import('../src/images/embeds');
+  const {parseOperation, operationPath} = await import('../src/images/operations');
+  const record = fixture();
+  const source = record.sourceNotes[0];
+  const text = `Before\n${markdownEmbed(record, source)}\nAfter`;
+  const plan = deletionProjection(text, source, record);
+  const operation = {
+    version: 1, recordPath: record.recordPath, baseline: record,
+    intent: {kind: 'delete', captures: [], files: [record.imagePath, record.sidecarPath, record.recordPath]}, synchronize: true, notes: {[source]: plan},
+  };
+  assert.deepEqual(parseOperation(JSON.stringify(operation), operationPath(record.id)), operation);
+  plan.after = 'Changed prose';
+  assert.throws(() => parseOperation(JSON.stringify(operation), operationPath(record.id)), /Invalid/);
+  operation.notes[source] = deletionProjection(text, source, record);
+  operation.notes[source].beforeRanges[0].from = 0;
+  assert.throws(() => parseOperation(JSON.stringify(operation), operationPath(record.id)), /Invalid/);
+  const target = '../images/' + record.id + '.jpg';
+  const links = `[Ordinary][photo]\n\n[photo]: ${target}\n`;
+  assert.deepEqual(deletionBlockers(links, source, record, () => undefined), ['[Ordinary][photo]']);
+  const basename = `![Basename](${record.id}.jpg)`;
+  assert.deepEqual(deletionBlockers(basename, source, record, () => record.imagePath), [basename]);
+});

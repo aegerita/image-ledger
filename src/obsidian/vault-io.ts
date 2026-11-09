@@ -1,15 +1,22 @@
-import { FileSystemAdapter, TFile, type Vault } from 'obsidian';
-import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { FileSystemAdapter, TFile, type FileManager, type Vault } from 'obsidian';
+import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { VaultIO } from '../images/store';
 import { isImageId } from '../images/ids';
 
-export function createVaultIO(vault: Vault): VaultIO {
+export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'trashFile'>): VaultIO {
   if (!(vault.adapter instanceof FileSystemAdapter)) {
     throw new Error('Image Ledger currently requires a desktop filesystem vault.');
   }
   const basePath = vault.adapter.getBasePath();
+  const checkTrash = () => {
+    // Obsidian's trashFile also permanently deletes when trashOption is "none".
+    const option = (vault as Vault & {getConfig(key: string): unknown}).getConfig('trashOption');
+    if (option !== 'local' && option !== 'system') {
+      throw new Error('Set Obsidian’s Deleted files setting to system Trash or the vault .trash folder before deleting images.');
+    }
+  };
   const resolve = (relative: string) => {
     const full = path.resolve(basePath, relative);
     if (full === basePath || !full.startsWith(basePath + path.sep) || relative.includes('\\')) {
@@ -46,6 +53,7 @@ export function createVaultIO(vault: Vault): VaultIO {
   };
 
   return {
+    checkTrash,
     reserveId: async id => {
       if (!isImageId(id)) throw new Error('Invalid image ID.');
       const key = id.toLowerCase();
@@ -139,9 +147,20 @@ export function createVaultIO(vault: Vault): VaultIO {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     },
+    trash: async p => {
+      checkTrash();
+      const destination = resolve(p);
+      const file = vault.getAbstractFileByPath(p);
+      if (!(file instanceof TFile)) throw new Error(`File unavailable for Trash: ${p}`);
+      const [root, actual] = await Promise.all([realpath(basePath), realpath(destination)]);
+      if (!actual.startsWith(root + path.sep)) throw new Error(`Refusing to trash a file outside this vault: ${p}`);
+      checkTrash();
+      await fileManager.trashFile(file);
+    },
     recordPaths: async () => vault.getMarkdownFiles()
       .filter(file => /(?:^|\/)image-records\/[^/]+\.md$/.test(file.path))
       .map(file => file.path),
+    mediaPaths: async () => vault.getFiles().filter(file => /\.(?:jpg|png|xmp)$/.test(file.path)).map(file => file.path),
     pendingPaths: async () => await vault.adapter.exists('.image-ledger/staging')
       ? (await vault.adapter.list('.image-ledger/staging')).files
       : [],

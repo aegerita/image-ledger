@@ -57,6 +57,7 @@ function fixture(persisted = {
   let recordReads = 0;
   let recordScans = 0;
   const io: VaultIO = {
+    checkTrash: () => {},
     reserveId: async id => {
       const reservation = `.image-ledger/ids/${id}`;
       if (text.has(reservation)) return false;
@@ -91,10 +92,12 @@ function fixture(persisted = {
     writeBinary: async (path, value) => { bytes.set(path, value.slice()); },
     mkdir: async path => { folders.add(path); },
     remove: async path => { text.delete(path); bytes.delete(path); files.delete(path); },
+    trash: async path => { text.delete(path); bytes.delete(path); files.delete(path); },
     recordPaths: async () => {
       recordScans++;
       return [...text.keys()].filter(path => /(?:^|\/)image-records\/[^/]+\.md$/.test(path));
     },
+    mediaPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => /\.(?:jpg|png|xmp)$/.test(path) && !path.startsWith('.')),
     pendingPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => path.startsWith('.image-ledger/staging/')),
     operationPaths: async () => [...text.keys()].filter(path => /^\.image-ledger\/operations\/[^/]+\.json$/.test(path)),
   };
@@ -107,6 +110,7 @@ function fixture(persisted = {
       getFirstLinkpathDest: (link: string) => ({path: link}),
     },
     vault: {
+      getMarkdownFiles: () => [...files.values()].filter(file => file.path.endsWith('.md') && !file.path.startsWith('.')),
       getAbstractFileByPath: (path: string) => files.get(path),
       read: (file: TFile) => io.read(file.path),
       process: (file: TFile, update: (value: string) => string) => io.process(file.path, update),
@@ -125,7 +129,7 @@ function fixture(persisted = {
   const store = new host.MediaStore(io);
   const settings = {...DEFAULTS};
   const notes = new host.NoteImages(app, settings);
-  const library = new host.RecordLibrary(app, store, notes, error => { errors.push(error); });
+  const library = new host.RecordLibrary(app, store, notes, error => { errors.push(error); }, action => action());
   const workflow = (describe: (record: ImageRecord) => Promise<string | null>) => new CaptureWorkflow(store, library, notes, {
     describe, notify: () => {}, report: error => { errors.push(error); },
   });
@@ -225,7 +229,7 @@ test('editor and file menus add only the implemented action for managed images a
   ]) {
     const menu = fakeMenu();
     build(menu.menu);
-    assert.deepEqual(menu.entries.map(entry => [entry.title, entry.icon]), [['Edit image description', 'pencil']]);
+    assert.deepEqual(menu.entries.map(entry => [entry.title, entry.icon]), [['Image Ledger: Edit image description', 'pencil'], ['Image Ledger: Delete image everywhere...', 'trash-2']]);
   }
   for (const line of [0, 2, 3]) {
     editor.setCursor({line, ch: 3});
@@ -1738,3 +1742,232 @@ for (const damaged of ['missing', 'malformed'] as const) {
     });
   }
 }
+
+function deleteSynchronizer(f: ReturnType<typeof fixture>) {
+  return Object.assign(async () => {}, {
+    remove: (record: ImageRecord, journal: import('../src/images/operations').ProjectionJournal) => f.notes.removeEmbeds(record, journal),
+    failed: (error: Error) => { f.errors.push(error); },
+  });
+}
+
+async function deletionFixture() {
+  const f = fixture();
+  await f.library.ready();
+  const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md');
+  const prepared = await f.store.prepare(pending);
+  const record = await f.store.describe(prepared, 'Delete this image');
+  await f.store.complete(pending);
+  const embed = `![Custom [alt]](${record.imagePath})`;
+  const details = `[Image details](${record.recordPath})`;
+  await f.io.write('Original.md', `Before\n${embed}\n\n${details}\nAfter`);
+  await f.io.write('Copied.md', `Copied ${embed} and ${embed}.\n\`${embed}\`\n<!-- ${embed} -->`);
+  return {f, record, prepared, embed, details};
+}
+
+test('deletion removes copied embeds and exact details links while preserving all surrounding text', async () => {
+  const {f, record, prepared, embed} = await deletionFixture();
+  const editor = f.openEditor('Original.md');
+  const duplicate = await f.store.stage({bytes: PNG, method: 'file'}, 'Later.md');
+  const other = await f.store.stage({bytes: JPEG, method: 'file'}, 'Other.md');
+  const trash: string[] = [];
+  const remove = f.io.trash;
+  f.io.trash = async path => { trash.push(path); await remove(path); };
+  const preview = await f.notes.deletionPreview(record);
+  assert.deepEqual(Object.keys(preview.notes), ['Original.md', 'Copied.md']);
+  assert.deepEqual(preview.blocked, []);
+  assert.deepEqual((await f.store.deletionAssets(record)).captures, [{id: duplicate.id, format: 'png'}]);
+  await f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f));
+  assert.equal(f.text.get('Original.md'), 'Before\n\n\n\nAfter');
+  assert.equal(editor.getValue(), f.text.get('Original.md'));
+  assert.equal(f.text.get('Copied.md'), `Copied  and .\n\`${embed}\`\n<!-- ${embed} -->`);
+  assert.deepEqual(trash, [record.imagePath, record.sidecarPath, record.recordPath]);
+  assert.deepEqual(f.store.allRecords(), []);
+  assert.equal(f.text.get(`.image-ledger/ids/${record.id}`), 'deleted');
+  assert.equal(f.text.get(`.image-ledger/ids/${duplicate.id}`), 'deleted');
+  assert.deepEqual(await f.io.operationPaths(), []);
+  assert.deepEqual((await f.store.pendingCaptures()).map(capture => capture.id), [other.id]);
+  await assert.rejects(f.store.prepare(duplicate), /deleted/);
+  await assert.rejects(f.store.describe(prepared, 'Stale caption'), /deleted/);
+  await assert.rejects(f.store.setDescription(record, 'Stale edit', deleteSynchronizer(f)), /deleted/);
+  await f.io.write(record.recordPath, serializeRecord(record));
+  await f.library.reconcileAll();
+  assert.deepEqual(f.store.allRecords(), [], 'Restored record must remain outside the active catalog');
+  assert.ok((await f.store.audit()).issues.some(issue => /orphan/.test(issue.reason)));
+  assert.equal(await f.io.exists(record.sidecarPath), false);
+});
+
+test('deletion handles multiline and reference embeds, preserves definitions and blocks unsupported live references', async () => {
+  const {f, record} = await deletionFixture();
+  const content = `Intro\n![Multi\nline](${record.imagePath})\n![Photo][photo]\n\n[photo]: ${record.imagePath}\nEnd`;
+  await f.io.write('Forms.md', content);
+  await f.io.write('Wiki.md', `![[${record.imagePath}]]`);
+  let preview = await f.notes.deletionPreview(record);
+  assert.equal(preview.notes['Forms.md'].after, `Intro\n\n\n\n[photo]: ${record.imagePath}\nEnd`);
+  assert.match(preview.blocked.join(), /Wiki.md/);
+  await f.io.write('Wiki.md', `\`![[${record.imagePath}]]\``);
+  await f.io.write('Link.md', `[Custom details](${record.recordPath})`);
+  preview = await f.notes.deletionPreview(record);
+  assert.equal(preview.blocked.length, 1);
+  assert.match(preview.blocked[0], /Link.md/);
+  await f.io.remove('Link.md');
+  await f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f));
+  assert.equal(f.text.get('Forms.md'), preview.notes['Forms.md'].after);
+});
+
+for (const failure of ['note', 'image', 'sidecar', 'record', 'cleanup']) {
+  test(`deletion resumes after a ${failure} failure and is idempotent across a second restart`, async () => {
+    const {f, record} = await deletionFixture();
+    const preview = await f.notes.deletionPreview(record);
+    const process = f.io.process;
+    const trash = f.io.trash;
+    const remove = f.io.remove;
+    f.io.process = async (path, update) => {
+      if (failure === 'note' && path === 'Copied.md') throw new Error('Injected note failure');
+      return process(path, update);
+    };
+    f.io.trash = async path => {
+      if (path === ({image: record.imagePath, sidecar: record.sidecarPath, record: record.recordPath} as Record<string, string>)[failure]) {
+        throw new Error('Injected Trash failure');
+      }
+      return trash(path);
+    };
+    f.io.remove = async path => {
+      if (failure === 'cleanup' && path.includes('/operations/')) throw new Error('Injected cleanup failure');
+      return remove(path);
+    };
+    await assert.rejects(f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f)), /Injected/);
+    assert.equal((await f.io.operationPaths()).length, 1);
+    assert.equal((await f.store.audit()).issues.some(issue => /orphan/.test(issue.reason)), false, 'An unfinished deletion is not a restored orphan');
+    const resumed = fixture(f.persisted);
+    await resumed.library.ready();
+    assert.deepEqual(resumed.errors, []);
+    assert.equal(resumed.text.get('Original.md'), preview.notes['Original.md'].after);
+    assert.equal(resumed.text.get('Copied.md'), preview.notes['Copied.md'].after);
+    assert.deepEqual(await resumed.io.operationPaths(), []);
+    for (const path of [record.imagePath, record.sidecarPath, record.recordPath]) assert.equal(await resumed.io.exists(path), false);
+    const twice = fixture(f.persisted);
+    await twice.library.ready();
+    assert.deepEqual(twice.store.allRecords(), []);
+    assert.deepEqual(twice.errors, []);
+  });
+}
+
+test('deletion recovery preserves independently edited notes and unrelated images', async () => {
+  const {f, record} = await deletionFixture();
+  const preview = await f.notes.deletionPreview(record);
+  await f.io.write('Copied.md', 'Independent new text');
+  await assert.rejects(f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f)), /source note changed/);
+  assert.equal(f.text.get('Original.md'), preview.notes['Original.md'].before);
+  const resumed = fixture(f.persisted);
+  await resumed.library.ready();
+  assert.match(String(resumed.errors[0]), /source note changed/);
+  assert.equal(resumed.text.get('Copied.md'), 'Independent new text');
+  assert.equal(await resumed.io.exists(record.imagePath), true);
+  const other = await resumed.library.prepare(await resumed.store.stage({bytes: JPEG, method: 'file'}, 'Other.md'));
+  assert.notEqual(other.record.id, record.id);
+});
+
+for (const change of ['cancel', 'note', 'record', 'new copy', 'pending capture']) {
+  test(`delete menu captures identity and rejects ${change} without deleting files`, async () => {
+    const {f, record} = await deletionFixture();
+    const menu = fakeMenu();
+    f.library.addFileMenu(menu.menu, f.files.get(record.recordPath)!, async () => null);
+    f.activate('Copied.md');
+    const open = host.DeleteImageModal.prototype.open;
+    host.DeleteImageModal.prototype.open = function() {
+      const dialog = this as unknown as {record: ImageRecord; resolve: (confirmed: boolean) => void};
+      assert.equal(dialog.record.id, record.id);
+      void (async () => {
+        if (change === 'note') await f.io.write('Original.md', 'Changed note');
+        if (change === 'record') await f.io.write(record.recordPath, serializeRecord({...record, description: 'Changed'}));
+        if (change === 'new copy') await f.io.write('New.md', `![New](${record.imagePath})`);
+        if (change === 'pending capture') await f.store.stage({bytes: PNG, method: 'file'}, 'New.md');
+        dialog.resolve(change !== 'cancel');
+      })();
+    };
+    try {
+      await menu.entries[1].click();
+      assert.equal(await f.io.exists(record.imagePath), true);
+      assert.deepEqual(await f.io.operationPaths(), []);
+      assert.equal(f.errors.length, change === 'cancel' ? 0 : 1);
+    } finally {
+      host.DeleteImageModal.prototype.open = open;
+    }
+  });
+}
+
+test('deletion never saves a stale open editor over newer disk text', async () => {
+  const {f, record} = await deletionFixture();
+  const editor = f.openEditor('Original.md');
+  const before = editor.getValue();
+  const preview = await f.notes.deletionPreview(record);
+  await f.io.write('Original.md', 'New external text');
+  await assert.rejects(f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f)), /changed|unsaved|conflict/i);
+  assert.equal(f.text.get('Original.md'), 'New external text');
+  assert.equal(editor.getValue(), before);
+  assert.equal(await f.io.exists(record.imagePath), true);
+});
+
+for (const removed of ['imagePath', 'sidecarPath'] as const) {
+  test(`deletion rejects a preview when ${removed} disappears before confirmation`, async () => {
+    const {f, record} = await deletionFixture();
+    const original = f.text.get('Original.md');
+    const open = host.DeleteImageModal.prototype.open;
+    host.DeleteImageModal.prototype.open = function() {
+      const dialog = this as unknown as {resolve: (confirmed: boolean) => void};
+      void f.io.remove(record[removed]).then(() => dialog.resolve(true));
+    };
+    try {
+      await f.library.deleteImage(record.id);
+      assert.equal(f.errors.length, 1);
+      assert.match(String(f.errors[0]), /changed/);
+      assert.equal(f.text.get('Original.md'), original);
+      assert.equal(await f.io.exists(record.recordPath), true);
+      assert.deepEqual(await f.io.operationPaths(), []);
+    } finally {
+      host.DeleteImageModal.prototype.open = open;
+    }
+  });
+}
+
+test('deletion blocks an unsaved removal of the last reference without flushing the editor', async () => {
+  const {f, record} = await deletionFixture();
+  const editor = f.openEditor('Original.md');
+  const saved = editor.getValue();
+  editor.transaction({changes: [{from: {line: 0, ch: 0}, to: editor.offsetToPos(saved.length), text: 'Unsaved edit'}]});
+  const preview = await f.notes.deletionPreview(record);
+  assert.match(preview.blocked.join(), /unsaved or conflicting/);
+  assert.equal(f.text.get('Original.md'), saved);
+  assert.equal(editor.getValue(), 'Unsaved edit');
+});
+
+test('an interrupted deletion does not trash a file absent from its approved preview', async () => {
+  const {f, record} = await deletionFixture();
+  await f.io.remove(record.imagePath);
+  const assets = await f.store.deletionAssets(record);
+  assert.deepEqual(assets.files, [record.sidecarPath, record.recordPath]);
+  const preview = await f.notes.deletionPreview(record);
+  f.io.trash = async () => { throw new Error('Injected Trash failure'); };
+  await assert.rejects(f.store.deleteImage(record, preview.notes, assets, deleteSynchronizer(f)), /Injected/);
+  await f.io.writeBinary(record.imagePath, PNG);
+  const resumed = fixture(f.persisted);
+  await resumed.library.ready();
+  assert.match(String(resumed.errors[0]), /outside the approved deletion/);
+  assert.equal(await resumed.io.exists(record.imagePath), true);
+  assert.equal(await resumed.io.exists(record.recordPath), true);
+  assert.equal((await resumed.io.operationPaths()).length, 1);
+});
+
+test('a failed live-editor save resumes deletion after restart without restoring the embeds', async () => {
+  const {f, record} = await deletionFixture();
+  f.openEditor('Original.md');
+  const preview = await f.notes.deletionPreview(record);
+  Object.assign(f.leaves[0].view as object, {save: async () => { throw new Error('Injected editor save failure'); }});
+  await assert.rejects(f.store.deleteImage(record, preview.notes, await f.store.deletionAssets(record), deleteSynchronizer(f)), /Injected/);
+  assert.equal(f.text.get('Original.md'), preview.notes['Original.md'].before);
+  const resumed = fixture(f.persisted);
+  await resumed.library.ready();
+  assert.deepEqual(resumed.errors, []);
+  assert.equal(resumed.text.get('Original.md'), preview.notes['Original.md'].after);
+  assert.deepEqual(await resumed.io.operationPaths(), []);
+});

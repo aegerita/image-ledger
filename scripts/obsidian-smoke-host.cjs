@@ -390,7 +390,7 @@ module.exports = async (app, config) => {
           } finally {
             app.workspace.offref(listener);
           }
-          const actions = menu.entries.filter(entry => entry.title === 'Edit image description');
+          const actions = menu.entries.filter(entry => entry.title === 'Image Ledger: Edit image description');
           assert.equal(actions.length, 1);
           const completed = actions[0].click();
           const menuInput = await modal();
@@ -406,7 +406,7 @@ module.exports = async (app, config) => {
         view.editor.setCursor(view.editor.offsetToPos(content.indexOf('![Example') + 3));
         const codeMenu = fakeMenu();
         app.workspace.trigger('editor-menu', codeMenu, view.editor, view);
-        assert.equal(codeMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+        assert.equal(codeMenu.entries.some(entry => entry.title === 'Image Ledger: Edit image description'), false);
         assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
         const list = await picker();
         assert.equal(list.querySelectorAll('button').length, 1);
@@ -416,7 +416,7 @@ module.exports = async (app, config) => {
         await wait(() => view.getMode() === 'preview', 'prototype Reading View');
         const previewMenu = fakeMenu();
         app.workspace.trigger('editor-menu', previewMenu, view.editor, view);
-        assert.equal(previewMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+        assert.equal(previewMenu.entries.some(entry => entry.title === 'Image Ledger: Edit image description'), false);
         assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
         const previewList = await picker();
         assert.equal(previewList.querySelectorAll('button').length, 1);
@@ -430,7 +430,7 @@ module.exports = async (app, config) => {
         for (const filePath of [png.imagePath, png.recordPath]) {
           const menu = fakeMenu();
           app.workspace.trigger('file-menu', menu, app.vault.getAbstractFileByPath(filePath), 'file-explorer');
-          const actions = menu.entries.filter(entry => entry.title === 'Edit image description');
+          const actions = menu.entries.filter(entry => entry.title === 'Image Ledger: Edit image description');
           assert.equal(actions.length, 1);
           await open(other);
           const completed = actions[0].click();
@@ -444,14 +444,14 @@ module.exports = async (app, config) => {
         for (const filePath of [source, 'fixtures/sample.png', 'images']) {
           const menu = fakeMenu();
           app.workspace.trigger('file-menu', menu, app.vault.getAbstractFileByPath(filePath), 'file-explorer');
-          assert.equal(menu.entries.some(entry => entry.title === 'Edit image description'), false, filePath);
+          assert.equal(menu.entries.some(entry => entry.title === 'Image Ledger: Edit image description'), false, filePath);
         }
         const view = await open('Menu-prototype.md');
         await view.leaf.setViewState({type: 'markdown', state: {file: 'Menu-prototype.md', mode: 'source', source: true}});
         view.editor.setCursor({line: 0, ch: 2});
         const textMenu = fakeMenu();
         app.workspace.trigger('editor-menu', textMenu, view.editor, view);
-        assert.equal(textMenu.entries.some(entry => entry.title === 'Edit image description'), false);
+        assert.equal(textMenu.entries.some(entry => entry.title === 'Image Ledger: Edit image description'), false);
       });
       await step('Note-first picker shows thumbnails and selects its image', async () => {
         const view = await open(other);
@@ -539,6 +539,91 @@ module.exports = async (app, config) => {
         assert.equal(read(other), before, 'Capture inserted into the active note');
         assert.deepEqual(await plugin().library.store.pendingCaptures(), []);
         verifyRecord(record('sample.png'));
+      });
+      await step('Delete menus preview, cancel and remove one synthetic image everywhere', async () => {
+        const store = plugin().library.store;
+        const note = 'Delete-source.md';
+        const copy = 'Delete-copy.md';
+        await app.vault.create(note, '# Delete source');
+        const bytes = Buffer.concat([fs.readFileSync(path.join(root, 'fixtures/sample.png')), Buffer.from('delete-only synthetic fixture')]);
+        const pending = await store.stage({bytes, method: 'file'}, note);
+        const prepared = await plugin().library.prepare(pending);
+        const item = await store.describe(prepared, 'Deletion smoke image');
+        await store.complete(pending);
+        app.vault.setConfig('trashOption', 'none');
+        try {
+          await assert.rejects(store.deletionAssets(item), /Deleted files/);
+          assert.ok(fs.existsSync(path.join(root, item.imagePath)));
+          assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')), []);
+        } finally {
+          app.vault.setConfig('trashOption', 'local');
+        }
+        const details = `[Image details](${item.recordPath})`;
+        await app.vault.modify(app.vault.getAbstractFileByPath(note), `Before\n${embed(item, note)}\n\n${details}\nAfter`);
+        await app.vault.create(copy, `Copy ${embed({...item, description: 'Custom alt'}, copy)} end`);
+        const view = await open(note);
+        const dialog = () => wait(() => documents().flatMap(doc => [...doc.querySelectorAll('.modal')])
+          .find(element => element.querySelector('.modal-title')?.textContent === 'Delete image everywhere?'), 'delete confirmation');
+        const button = (element, label) => [...element.querySelectorAll('button')].find(button => button.textContent === label);
+        const drained = async () => {
+          let done = false;
+          plugin().captures.enqueue(async () => { done = true; });
+          await wait(() => done, 'deletion queue');
+        };
+        for (const sourceMode of [true, false]) {
+          await view.leaf.setViewState({type: 'markdown', state: {file: note, mode: 'source', source: sourceMode}});
+          view.editor.setCursor(view.editor.offsetToPos(view.editor.getValue().indexOf('![') + 3));
+          const menu = fakeMenu();
+          app.workspace.trigger('editor-menu', menu, view.editor, view);
+          const action = menu.entries.find(entry => entry.title === 'Image Ledger: Delete image everywhere...');
+          assert.ok(action, 'Missing editor deletion action');
+          action.click();
+          const confirmation = await dialog();
+          assert.ok(confirmation.querySelector('img'));
+          for (const target of [note, copy, item.imagePath, item.sidecarPath, item.recordPath]) assert.ok(confirmation.textContent.includes(target));
+          assert.equal(confirmation.ownerDocument.activeElement, button(confirmation, 'Cancel'));
+          button(confirmation, 'Cancel').click();
+          await drained();
+          assert.ok(fs.existsSync(path.join(root, item.imagePath)));
+        }
+        for (const target of [item.imagePath, item.recordPath]) {
+          const menu = fakeMenu();
+          app.workspace.trigger('file-menu', menu, app.vault.getAbstractFileByPath(target), 'file-explorer');
+          const action = menu.entries.find(entry => entry.title === 'Image Ledger: Delete image everywhere...');
+          assert.ok(action, 'Missing file deletion action');
+          action.click();
+          button(await dialog(), 'Cancel').click();
+          await drained();
+        }
+        // Select the same image through the registered command and its real destructive button.
+        view.editor.setCursor(view.editor.offsetToPos(view.editor.getValue().indexOf('![') + 3));
+        assert.equal(app.commands.executeCommandById('image-ledger:delete-image-everywhere'), true);
+        const confirmation = await dialog();
+        const trashFile = app.fileManager.trashFile;
+        const trashed = [];
+        app.fileManager.trashFile = async function(file) {
+          trashed.push(file.path);
+          return trashFile.call(this, file);
+        };
+        try {
+          button(confirmation, 'Delete image everywhere').click();
+          await drained();
+        } finally {
+          app.fileManager.trashFile = trashFile;
+        }
+        assert.deepEqual(trashed, [item.imagePath, item.sidecarPath, item.recordPath]);
+        assert.equal(read(note), 'Before\n\n\n\nAfter');
+        assert.equal(view.editor.getValue(), read(note));
+        assert.equal(read(copy), 'Copy  end');
+        for (const file of trashed) {
+          assert.equal(fs.existsSync(path.join(root, file)), false);
+          assert.ok(fs.existsSync(path.join(root, '.trash', path.basename(file))), 'Managed file missing from recoverable local Trash');
+        }
+        assert.equal(read(`.image-ledger/ids/${item.id}`), 'deleted');
+        assert.equal(store.allRecords().some(record => record.id === item.id), false);
+        assert.deepEqual(fs.readdirSync(path.join(root, '.image-ledger/operations')), []);
+        assert.equal(store.allRecords().length, 2);
+        receipt.deletion = {id: item.id, trashed, sourceAndLivePreview: 'PASS', fileMenus: 'PASS', command: 'PASS', nativeRightClick: 'NOT RUN'};
       });
       const operations = [];
       const originalNotes = {};

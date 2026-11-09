@@ -27,11 +27,23 @@ Choose **Describe later** to keep the image without finishing its description. R
 
 In an editor, place the cursor inside a managed image's Markdown embed and run **Edit image description** to edit it directly. Elsewhere in the note, the command lists that note's images; if there are none, it lists all images. An open image or image record still opens its description directly. The picker shows thumbnails, source notes and IDs, newest imports first. Search by description, ID or note; the count shows when only the first 100 matches are displayed.
 
-**Edit image description** is also added to file menus for managed images and their record notes. Source and Live Preview editor menus include it when the editor selection is inside a managed Markdown image embed. Ordinary text and unmanaged images get no added item. Reading View has no editor-menu integration; use the command or the image/record file menu. Native right-click delivery and targeting on rendered images remain unverified; current checks invoke the menu handlers through Obsidian's API. Wiki and reference-style embeds are not supported by cursor lookup.
+**Image Ledger: Edit image description** is also added to file menus for managed images and their record notes. Source and Live Preview editor menus include it when the editor selection is inside a managed Markdown image embed. Ordinary text and unmanaged images get no added item. Reading View has no editor-menu integration; use the command or the image/record file menu. Native right-click delivery and targeting on rendered images remain unverified; current checks invoke the menu handlers through Obsidian's API. Wiki and reference-style embeds are not supported by cursor lookup.
 
 Description saves report updated embeds and skipped references, including customized alt text, wiki embeds without alt text, and missing notes. Choose **Review skipped embeds** in the notice to inspect them and explicitly overwrite an individual single-line inline Markdown embed. Multiline and reference-style embeds are reported but cannot be overwritten. Notes with paths that cannot be stored in image records (for example, names containing brackets) are reported and left unchanged. Copied references found through Obsidian's link index are added to the record; indexing may take a moment after a note changes. **Always keep alt text in sync with the description** in settings overwrites custom alt text on generated-form embeds during future saves; it is off by default.
 
 Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace. That image remains blocked until its save can recover; unrelated images can still be imported and edited. Run **Check image records** to find unfinished saves.
+
+## Delete an image
+
+Right-click a managed image's Markdown embed in Source or Live Preview, or its image/record file, and choose **Image Ledger: Delete image everywhere...**. The editor menu uses the selection inside the embed. The same command is available from the command palette, with the same image picker as description editing.
+
+The confirmation shows the image, each affected note and embed count, managed image/XMP/record files, and any staged copies to cancel. **Cancel** has initial focus. Confirming removes Markdown embeds (including custom alt text, multiline and reference-style embeds) and exact generated **Image details** links, preserving surrounding note text. Files go through Obsidian's **Deleted files** setting; choose system Trash or the vault `.trash` folder. Permanent deletion and managed paths pointing outside the vault are refused. Removing one embed manually still keeps the saved image.
+
+Deletion scans Markdown notes, including open editors and copied embeds. Wiki embeds, ordinary links to the image/record, property links, and indexed references outside Markdown block deletion; resolve the listed references first. HTML embeds and unindexed references in other file formats are outside this check. Save or reload affected notes with unsaved or conflicting edits before deleting. If notes, records or managed files change while the preview is open, reopen it before deleting.
+
+Interrupted deletions resume on startup. Conflicting note edits retain the recovery receipt and remaining files; **Check image records** reports the unfinished operation. Deleted IDs stay reserved. Restoring deleted files from Trash does not restore their note embeds or reactivate their catalog entry; the audit flags restored files as orphans. A deliberate new import gets a new ID.
+
+Deletion affects this vault only. Original source files, Git history, backup snapshots, remote copies and independently owned photo libraries are excluded. Native right-click delivery remains unverified; menu handlers and confirmation controls are tested through Obsidian's API.
 
 ## Where your images go
 
@@ -51,7 +63,7 @@ Received image bytes stay unchanged. Clipboard images may already have lost orig
 
 - **A description is unfinished:** run **Edit image description**.
 - **An import was interrupted:** run **Recover interrupted image captures**. The plugin retains staged files until capture finishes.
-- **An image seems missing:** run **Check image records** for a report listing missing image paths, pending descriptions, interrupted captures, unreadable capture receipts, and unfinished description saves. The report stays open until dismissed. It does not change files or attempt recovery, and remains available when recovery is blocked.
+- **An image seems missing:** run **Check image records** for a report listing missing image paths, pending descriptions, interrupted captures, unreadable capture receipts, and unfinished image operations. The report stays open until dismissed. It does not change files or attempt recovery, and remains available when recovery is blocked.
 
 For development and testing, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

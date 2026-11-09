@@ -16,9 +16,10 @@ export default class ImageLedgerPlugin extends Plugin {
 
   async onload(): Promise<void> {
     this.settings = settingsFromData(await this.loadData());
-    const store = new MediaStore(createVaultIO(this.app.vault), this.settings);
+    const store = new MediaStore(createVaultIO(this.app.vault, this.app.fileManager), this.settings);
     this.notes = new NoteImages(this.app, this.settings);
-    this.library = new RecordLibrary(this.app, store, this.notes, error => this.report(error));
+    this.library = new RecordLibrary(this.app, store, this.notes, error => this.report(error),
+      action => this.captures.enqueue(action));
     this.captures = new CaptureWorkflow(store, this.library, this.notes, {
       describe: record => this.askDescription(record),
       notify: message => { new Notice(message); },
@@ -105,6 +106,10 @@ export default class ImageLedgerPlugin extends Plugin {
     this.addCommand({
       id: 'edit-image-description', name: 'Edit image description',
       callback: () => this.library.editDescription(record => this.askDescription(record)),
+    });
+    this.addCommand({
+      id: 'delete-image-everywhere', name: 'Delete image everywhere...',
+      callback: () => this.library.deleteImage(),
     });
     this.addCommand({
       id: 'recover-captures', name: 'Recover interrupted image captures',

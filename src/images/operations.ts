@@ -1,5 +1,7 @@
 import type { ImageRecord } from './model';
 import { assertVaultPath, isImageRecord } from './records';
+import { deletionProjection } from './embeds';
+import { isImageId } from './ids';
 
 export interface EmbedRange {
   from: number;
@@ -18,9 +20,15 @@ export interface ProjectionJournal {
   checkpoint(): Promise<void>;
 }
 
+export interface DeletionAssets {
+  files: string[];
+  captures: {id: string; format: 'jpg' | 'png'}[];
+}
+
 export type RecordIntent =
   | {kind: 'description'; description: string | null; source?: {from: string; to: string}}
   | {kind: 'rename'; from: string; to: string}
+  | ({kind: 'delete'} & DeletionAssets)
   | {kind: 'reconcile'};
 
 export interface RecordOperation {
@@ -65,6 +73,12 @@ export function parseOperation(text: string, file: string): RecordOperation {
     } else if (intent.kind === 'rename') {
       assertVaultPath(intent.from);
       assertVaultPath(intent.to);
+    } else if (intent.kind === 'delete') {
+      if (!operation.synchronize || operation.recordPath !== operation.baseline.recordPath
+        || !Array.isArray(intent.files) || new Set(intent.files).size !== intent.files.length
+        || intent.files.some(path => ![operation.baseline.imagePath, operation.baseline.sidecarPath, operation.baseline.recordPath].includes(path))
+        || !Array.isArray(intent.captures)
+        || intent.captures.some(capture => !isImageId(capture.id) || !['jpg', 'png'].includes(capture.format))) throw new Error();
     } else if (intent.kind !== 'reconcile') throw new Error();
     if (operation.discoveredNotes !== undefined) {
       if (!Array.isArray(operation.discoveredNotes)) throw new Error();
@@ -77,7 +91,11 @@ export function parseOperation(text: string, file: string): RecordOperation {
     if (!operation.synchronize && Object.keys(operation.notes).length) throw new Error();
     for (const [source, plan] of Object.entries(operation.notes)) {
       assertVaultPath(source);
-      if (!source.endsWith('.md') || !validProjection(plan)) throw new Error();
+      if (!source.endsWith('.md')) throw new Error();
+      if (intent.kind === 'delete') {
+        if (source === operation.baseline.recordPath || !plan || typeof plan.before !== 'string'
+          || JSON.stringify(plan) !== JSON.stringify(deletionProjection(plan.before, source, operation.baseline))) throw new Error();
+      } else if (!validProjection(plan)) throw new Error();
     }
     return operation;
   } catch {

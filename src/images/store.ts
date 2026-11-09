@@ -4,9 +4,10 @@ import { detectImageFormat, extractMetadata, sha256 } from './media';
 import { BASE_CONTENT, normalizeDescription, parseRecord, parseRecordSnapshot, serializeRecord, serializeSidecar } from './records';
 import type { ImageRecord, MediaInput } from './model';
 import type { StorageLayout } from '../settings';
-import { OPERATION_DIR, operationPath, parseOperation, type ProjectionJournal, type RecordIntent, type RecordOperation } from './operations';
+import { OPERATION_DIR, operationPath, parseOperation, type DeletionAssets, type NoteProjection, type ProjectionJournal, type RecordIntent, type RecordOperation } from './operations';
 
 export interface VaultIO {
+  checkTrash(): void;
   reserveId(id: string): Promise<boolean>;
   exists(path: string): Promise<boolean>;
   read(path: string): Promise<string>;
@@ -16,7 +17,9 @@ export interface VaultIO {
   writeBinary(path: string, bytes: Uint8Array, mtime?: number): Promise<void>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
+  trash(path: string): Promise<void>;
   recordPaths(): Promise<string[]>;
+  mediaPaths(): Promise<string[]>;
   pendingPaths(): Promise<string[]>;
   operationPaths(): Promise<string[]>;
 }
@@ -53,6 +56,7 @@ export type SynchronizeRecord = ((previous: ImageRecord, next: ImageRecord, jour
   failed?: (error: Error) => void;
   references?: (record: ImageRecord) => string[];
   saved?: (record: ImageRecord, journal: ProjectionJournal) => void;
+  remove?: (record: ImageRecord, journal: ProjectionJournal) => Promise<void>;
 };
 
 const STATE_DIR = '.image-ledger/staging';
@@ -148,8 +152,12 @@ export class MediaStore {
       for (const file of await this.io.operationPaths()) {
         try {
           const record = await this.resumeOperation(file, synchronize);
-          const content = await this.io.read(record.recordPath);
-          saved.set(record.recordPath, {content, record: parseRecord(content)});
+          if (await this.io.exists(record.recordPath)) {
+            const content = await this.io.read(record.recordPath);
+            saved.set(record.recordPath, {content, record: parseRecord(content)});
+          } else {
+            saved.delete(record.recordPath);
+          }
         } catch (error) {
           retainFailure(file, error);
         }
@@ -160,6 +168,7 @@ export class MediaStore {
     for (const [file, entry] of saved) {
       let {content, record} = entry;
       if (!record) continue;
+      if (await this.isDeleted(record.id)) continue;
       const receipt = operationPath(record.id);
       if (synchronize && !failed.has(receipt)) {
         try {
@@ -253,10 +262,12 @@ export class MediaStore {
 
   prepare(pending: PendingCapture, synchronize?: SynchronizeRecord): Promise<PreparedCapture> {
     return this.exclusive(async () => {
+      await this.assertActive(pending.id);
       const bytes = await this.io.readBinary(pending.dataPath);
       const hash = sha256(bytes);
       // Re-read records so edits made through Bases remain authoritative.
       await this.refreshRecords(synchronize);
+      await this.assertActive(pending.id);
       // A retained receipt still owns its bytes even when its record is missing or malformed.
       for (const file of await this.io.operationPaths()) {
         const content = await this.io.read(file);
@@ -351,6 +362,50 @@ export class MediaStore {
     });
   }
 
+  async deletionAssets(record: ImageRecord): Promise<DeletionAssets> {
+    this.io.checkTrash();
+    await this.verifyDeletionFiles(record);
+    const files: string[] = [];
+    for (const file of [record.imagePath, record.sidecarPath, record.recordPath]) {
+      if (await this.io.exists(file)) files.push(file);
+    }
+    const matches: {id: string; format: 'jpg' | 'png'}[] = [];
+    for (const pending of await this.pendingCaptures()) {
+      if (pending.id === record.id || sha256(await this.io.readBinary(pending.dataPath)) === record.sha256) {
+        matches.push({id: pending.id, format: pending.format});
+      }
+    }
+    return {files, captures: matches.sort((left, right) => left.id.localeCompare(right.id))};
+  }
+
+  deleteImage(record: ImageRecord, notes: Record<string, NoteProjection>, assets: DeletionAssets, synchronize: SynchronizeRecord): Promise<void> {
+    return this.exclusive(async () => {
+      await this.assertActive(record.id);
+      if (await this.io.exists(operationPath(record.id))) throw new Error('Recover the unfinished image operation before deleting.');
+      const current = parseRecord(await this.io.read(record.recordPath));
+      if (JSON.stringify(current) !== JSON.stringify(record)
+        || JSON.stringify(await this.deletionAssets(record)) !== JSON.stringify(assets)) {
+        throw new Error('The image changed. Open the deletion preview again.');
+      }
+      const operation: RecordOperation = {
+        version: 1, recordPath: record.recordPath, baseline: record,
+        intent: {kind: 'delete', ...assets}, synchronize: true, notes,
+      };
+      await this.checkpoint(operation);
+      await this.finishOperation(operation, synchronize);
+    });
+  }
+
+  private async isDeleted(id: string): Promise<boolean> {
+    if (!isImageId(id)) return false;
+    const marker = `.image-ledger/ids/${id}`;
+    return await this.io.exists(marker) && await this.io.read(marker) === 'deleted';
+  }
+
+  private async assertActive(id: string): Promise<void> {
+    if (await this.isDeleted(id)) throw new Error('This image was deleted. Stale captures and edits cannot restore it.');
+  }
+
   rename(previousPath: string, renamedPath: string, synchronize: SynchronizeRecord): Promise<void> {
     const intent: RecordIntent = {kind: 'rename', from: previousPath, to: renamedPath};
     return this.exclusive(async () => {
@@ -389,7 +444,7 @@ export class MediaStore {
       if (!await this.io.exists(recordPath)) return;
       const content = await this.io.read(recordPath);
       const current = parseRecord(content);
-      if (current && current.recordPath === recordPath) {
+      if (current && current.recordPath === recordPath && !await this.isDeleted(current.id)) {
         await this.reconcileRecord(current, content, synchronize);
       }
     });
@@ -410,6 +465,7 @@ export class MediaStore {
     synchronize?: SynchronizeRecord,
     expectedDescription?: string,
   ): Promise<ImageRecord> {
+    await this.assertActive(id);
     if (intent.kind === 'description' && intent.description !== null) {
       intent = {...intent, description: normalizeDescription(intent.description)};
     }
@@ -417,6 +473,7 @@ export class MediaStore {
     if (await this.io.exists(receipt)) {
       recordPath = (await this.resumeOperation(receipt, synchronize)).recordPath;
     }
+    await this.assertActive(id);
     const baseline = parseRecord(await this.io.read(recordPath));
     if (!baseline || baseline.id !== id) {
       throw new Error('The image record changed or cannot be read. Newer saved content was not replaced.');
@@ -438,6 +495,7 @@ export class MediaStore {
   }
 
   private async retargetOperation(operation: RecordOperation): Promise<void> {
+    if (operation.intent.kind === 'delete') return;
     if (await this.io.exists(operation.recordPath)) return;
     operation.recordPath = await this.findMovedRecord(operation.baseline);
     await this.checkpoint(operation);
@@ -467,6 +525,8 @@ export class MediaStore {
   }
 
   private async finishOperation(operation: RecordOperation, synchronize?: SynchronizeRecord): Promise<ImageRecord> {
+    if (operation.intent.kind === 'delete') return this.finishDeletion(operation, synchronize);
+    await this.assertActive(operation.baseline.id);
     if (operation.synchronize && !synchronize) {
       throw new Error('This image has an unfinished save. Recover its note updates before making another change.');
     }
@@ -513,6 +573,62 @@ export class MediaStore {
     }
   }
 
+  private async finishDeletion(operation: RecordOperation, synchronize?: SynchronizeRecord): Promise<ImageRecord> {
+    if (operation.intent.kind !== 'delete' || !synchronize?.remove) {
+      throw new Error('Deletion recovery needs the note removal handler.');
+    }
+    this.io.checkTrash();
+    const record = operation.baseline;
+    await this.verifyDeletionFiles(record, operation.intent.files);
+    for (const capture of operation.intent.captures) {
+      const data = `${STATE_DIR}/${capture.id}.${capture.format}`;
+      if (await this.io.exists(data) && sha256(await this.io.readBinary(data)) !== record.sha256) {
+        throw new Error('A staged image changed during deletion. Files and receipt were retained.');
+      }
+    }
+    await this.io.mkdir('.image-ledger/ids');
+    for (const id of new Set([record.id, ...operation.intent.captures.map(capture => capture.id)])) {
+      await this.io.write(`.image-ledger/ids/${id}`, 'deleted');
+    }
+    this.records.delete(record.id);
+    this.byHash.delete(record.sha256);
+    await synchronize.remove(record, {notes: operation.notes, checkpoint: () => this.checkpoint(operation)});
+    await this.verifyDeletionFiles(record, operation.intent.files);
+    for (const file of operation.intent.files) {
+      if (await this.io.exists(file)) await this.io.trash(file);
+    }
+    for (const capture of operation.intent.captures) {
+      await this.io.remove(`${STATE_DIR}/${capture.id}.${capture.format}`);
+      await this.io.remove(`${STATE_DIR}/${capture.id}.json`);
+    }
+    await this.io.remove(operationPath(record.id));
+    return record;
+  }
+
+  private async verifyDeletionFiles(record: ImageRecord, approvedFiles?: string[]): Promise<void> {
+    if (approvedFiles) {
+      for (const file of [record.imagePath, record.sidecarPath, record.recordPath]) {
+        if (!approvedFiles.includes(file) && await this.io.exists(file)) {
+          throw new Error(`A file appeared outside the approved deletion: ${file}. Files and receipt were retained.`);
+        }
+      }
+    }
+    if (await this.io.exists(record.recordPath)) {
+      const current = parseRecord(await this.io.read(record.recordPath));
+      if (JSON.stringify(current) !== JSON.stringify(record)) {
+        throw new Error('The image record changed during deletion. Files and receipt were retained.');
+      }
+    }
+    if (await this.io.exists(record.imagePath)
+      && sha256(await this.io.readBinary(record.imagePath)) !== record.sha256) {
+      throw new Error('The image bytes changed during deletion. Files and receipt were retained.');
+    }
+    if (await this.io.exists(record.sidecarPath)
+      && await this.io.read(record.sidecarPath) !== serializeSidecar(record)) {
+      throw new Error('The image sidecar changed during deletion. Files and receipt were retained.');
+    }
+  }
+
   private async persist(record: ImageRecord, expectedContent?: string): Promise<boolean> {
     if (expectedContent === undefined && await this.io.exists(record.recordPath)) {
       throw new Error('Refusing to overwrite an existing image record. The capture remains staged for recovery.');
@@ -549,6 +665,12 @@ export class MediaStore {
         try {
           const record = parseRecord(await this.io.read(file));
           if (!record) throw new Error('Invalid image record');
+          if (await this.isDeleted(record.id)) {
+            if (!await this.io.exists(operationPath(record.id))) {
+              report.issues.push({path: file, reason: 'Deleted image restored as an orphan. It will not rejoin the catalog.'});
+            }
+            continue;
+          }
           report.records++;
           if (record.captionStatus === 'pending') {
             report.pending++;
@@ -562,13 +684,19 @@ export class MediaStore {
           report.issues.push({path: file, reason: `Could not check record: ${String(error)}`});
         }
       }
+      for (const file of await this.io.mediaPaths()) {
+        const id = path.posix.parse(file).name;
+        if (await this.isDeleted(id) && !await this.io.exists(operationPath(id))) {
+          report.issues.push({path: file, reason: 'Deleted image file restored as an orphan. It will not rejoin the catalog.'});
+        }
+      }
       const captures = await this.pendingCaptures((file, reason) => report.issues.push({path: file, reason}));
       report.interrupted = captures.length;
       for (const capture of captures) {
         report.issues.push({path: capture.transactionPath, reason: `Interrupted capture for ${capture.sourcePath}. Run Recover interrupted image captures.`});
       }
       for (const file of await this.io.operationPaths()) {
-        report.issues.push({path: file, reason: 'Unfinished description save. Keep this receipt and affected notes for recovery.'});
+        report.issues.push({path: file, reason: 'Unfinished image operation. Keep this receipt and affected notes for recovery.'});
       }
       return report;
     });

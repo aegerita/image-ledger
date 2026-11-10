@@ -1468,6 +1468,53 @@ test('recovery preserves existing images with either parenthesis URL form and cu
   }
 });
 
+for (const form of ['fenced code', 'HTML comment', 'reference-style image']) {
+  test(`recovery matches real Markdown embeds in a note containing ${form}`, async () => {
+    const f = fixture();
+    await f.library.ready();
+    const pending = await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md');
+    const record = await f.store.describe(await f.store.prepare(pending), 'Recovered image');
+    const embed = `![Example](${record.imagePath})`;
+    const original = form === 'fenced code'
+      ? `\`\`\`markdown\n${embed}\n\`\`\`\n`
+      : form === 'HTML comment'
+        ? `<!-- ${embed} -->\n`
+        : `![Example][photo]\n\n[photo]: ${record.imagePath}\n`;
+    await f.io.write('Original.md', original);
+    const captures = f.workflow(async () => null);
+
+    captures.recover();
+    await f.drain(captures);
+
+    const expected = form === 'reference-style image'
+      ? original
+      : `${original.trimEnd()}\n\n![Recovered image](${record.imagePath})\n\n[Image details](${record.recordPath})\n`;
+    assert.equal(f.text.get('Original.md'), expected);
+    assert.deepEqual(await f.store.pendingCaptures(), []);
+    assert.deepEqual(f.errors, []);
+
+    await f.notes.recover(record, 'Original.md');
+    assert.equal(f.text.get('Original.md'), expected, 'A second recovery must not add another embed');
+  });
+}
+
+test('recovery checks the latest note text inside its atomic update', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const prepared = await f.store.prepare(await f.store.stage({bytes: PNG, method: 'file'}, 'Original.md'));
+  const record = await f.store.describe(prepared, 'Recovered image');
+  await f.io.write('Original.md', '# Original\n');
+  const concurrent = `# Original\n\n![Added meanwhile](${record.imagePath})\n`;
+  const process = f.io.process;
+  f.io.process = async (path, update) => {
+    if (path === 'Original.md') await f.io.write(path, concurrent);
+    await process(path, update);
+  };
+
+  await f.notes.recover(record, 'Original.md');
+
+  assert.equal(f.text.get('Original.md'), concurrent);
+});
 
 test('Bases description saves discover copied references and report custom, wiki and missing notes', async () => {
   const f = fixture();

@@ -6,16 +6,16 @@ Requires desktop Obsidian 1.10 or later. Tested on macOS. This is an early devel
 
 ## Install
 
-There is no downloadable release yet. Installation currently requires building from source. If you do not build plugins, wait for a release with ready-to-copy files. Try development builds in a separate vault first.
+Install manually from [GitHub Releases](https://github.com/aegerita/image-ledger/releases).
 
-1. [Build the plugin from source](CONTRIBUTING.md#development-setup).
+1. Download `main.js`, `manifest.json`, and `styles.css` from the release assets.
 2. Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/plugins/image-ledger/` folder. Create that folder if needed.
 3. Reload Obsidian and enable **Image Ledger** in **Settings → Community plugins**.
 4. Disable any other plugin that handles image pastes, so only one plugin handles each image.
 
 `.obsidian` is the hidden settings folder inside your vault. Enable **Bases** under **Settings → Core plugins** to browse the image library.
 
-To update, replace those three files with a new build and reload the plugin.
+To update, replace those three files with the files from a newer release and reload the plugin. To build from source, see [development setup](CONTRIBUTING.md#development-setup); use a generated test vault for development builds.
 
 ## Add your first image
 

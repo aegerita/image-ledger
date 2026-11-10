@@ -319,11 +319,10 @@ export class NoteImages {
   async recover(record: ImageRecord, sourcePath: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(sourcePath);
     if (!(file instanceof TFile)) return;
-    const text = await this.app.vault.read(file);
-    const target = imageTargetPattern(markdownEmbed(record, file.path));
-    if (!new RegExp(`!\\[[^\\n]*\\]\\(${target}\\)`).test(text)) {
-      await this.app.vault.process(file, content => `${content.trimEnd()}\n\n${this.embedWithDetails(record, file.path)}\n`);
-    }
+    await this.app.vault.process(file, content => {
+      if (managedImageEmbeds(content, file.path, [record], true).length) return content;
+      return `${content.trimEnd()}\n\n${this.embedWithDetails(record, file.path)}\n`;
+    });
   }
 
   sourceNote(sourcePath: string): TFile | undefined {

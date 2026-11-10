@@ -15,7 +15,7 @@ Use the Caveman and Ponytail skills. Keep changes small and reports concise.
 
 - Run `npm test` for code changes. Use `npm run test:obsidian` for live plugin/UI verification through CLI/API calls and programmatic DOM handlers.
 - Read TESTING.md before changing the runner. Preserve its 90-second deadline, bounded waits, canonical path checks, generated-vault marker, build/fixture/plugin validation, nonce checks, and JSON receipts.
-- All tests use fresh generated synthetic vaults. Never test or install test builds in `/Users/aegerita/Coding/Journal`, or copy personal notes, settings, or credentials into fixtures. Preserve the generated-vault-only trust step.
+- All tests and test-build installations must use fresh generated synthetic vaults. Never use personal vaults or copy personal notes, settings, or credentials into fixtures. Preserve the generated-vault-only trust step.
 - Do not repeat successful checks without a new change, failure, or unresolved concern.
 
 ## No computer use

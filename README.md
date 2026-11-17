@@ -27,7 +27,7 @@ Update the three plugin files together. Existing vaults from the earlier record-
 
 Images go in `images/`, or in `<year>/images/` if you choose a year-based layout. Their names use a 64-character normalized SHA-256 hash. Imports with matching identity reuse the existing image. An existing description wins when you reimport another copy. Description changes keep the filename and all note links.
 
-Image Ledger caches captions in `.image-ledger/catalog-cache.json` for faster startup and browsing. You can remove that file while the plugin is closed to rebuild it on startup. Captions live in the image files.
+Image Ledger caches captions in `.image-ledger/catalog-cache.json` for faster startup and browsing. The cache uses machine-specific file metadata, so exclude it from Git and vault sync. You can remove the cache while the plugin is closed to rebuild it on startup. Captions live in the image files.
 
 Copy the image files or the entire image folder to export them. The images contain their descriptions and received photo metadata. The filename is a deduplication ID, so use a separate file checksum to verify a transfer. The hash stays stable through description edits and across the supported ExifTool versions. Recompression or other metadata edits can produce a different ID.
 

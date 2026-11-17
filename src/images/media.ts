@@ -1,10 +1,8 @@
 import { createHash } from 'node:crypto';
-import exifr from 'exifr';
-import type { ImageFormat, ImageMetadata } from './model';
+import type { ImageFormat } from './model';
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 const SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
-type Dimensions = { width: number; height: number };
 
 function invalidImage(format: string): never {
   throw new Error(`This ${format} image is incomplete or has an invalid header. Export or copy the original image again.`);
@@ -14,9 +12,9 @@ function uint32(bytes: Uint8Array, offset: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
 }
 
-function pngDimensions(bytes: Uint8Array): Dimensions {
+function validatePng(bytes: Uint8Array): void {
   let offset = 8;
-  let dimensions: Dimensions | undefined;
+  let hasHeader = false;
   let hasData = false;
   while (offset + 12 <= bytes.length) {
     const length = uint32(bytes, offset);
@@ -24,7 +22,7 @@ function pngDimensions(bytes: Uint8Array): Dimensions {
     const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
     if (offset === 8 && type !== 'IHDR') invalidImage('PNG');
     if (type === 'IHDR') {
-      if (dimensions || length !== 13) invalidImage('PNG');
+      if (hasHeader || length !== 13) invalidImage('PNG');
       const width = uint32(bytes, offset + 8);
       const height = uint32(bytes, offset + 12);
       const depth = bytes[offset + 16];
@@ -41,21 +39,21 @@ function pngDimensions(bytes: Uint8Array): Dimensions {
         || bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] > 1) {
         invalidImage('PNG');
       }
-      dimensions = { width, height };
+      hasHeader = true;
     } else if (type === 'IDAT') {
       hasData ||= length > 0;
     } else if (type === 'IEND') {
-      if (length !== 0 || !dimensions || !hasData) invalidImage('PNG');
-      return dimensions;
+      if (length !== 0 || !hasHeader || !hasData) invalidImage('PNG');
+      return;
     }
     offset += length + 12;
   }
   return invalidImage('PNG');
 }
 
-function jpegDimensions(bytes: Uint8Array): Dimensions {
+function validateJpeg(bytes: Uint8Array): void {
   let offset = 2;
-  let dimensions: Dimensions | undefined;
+  let hasHeader = false;
   while (offset < bytes.length) {
     if (bytes[offset++] !== 0xff) invalidImage('JPEG');
     while (bytes[offset] === 0xff) offset++;
@@ -71,14 +69,14 @@ function jpegDimensions(bytes: Uint8Array): Dimensions {
       const width = bytes[offset + 5] * 256 + bytes[offset + 6];
       const components = bytes[offset + 7];
       if (!width || !height || !components || length !== 8 + 3 * components) invalidImage('JPEG');
-      dimensions = { width, height };
+      hasHeader = true;
     }
     if (marker === 0xda) {
-      if (!dimensions || length < 6) invalidImage('JPEG');
+      if (!hasHeader || length < 6) invalidImage('JPEG');
       // Entropy data may contain stuffed FF00 and restart markers. A real EOI
       // is still required; this checks completeness without decoding pixels.
       for (let end = offset + length; end + 1 < bytes.length; end++) {
-        if (bytes[end] === 0xff && bytes[end + 1] === 0xd9) return dimensions;
+        if (bytes[end] === 0xff && bytes[end + 1] === 0xd9) return;
       }
       invalidImage('JPEG');
     }
@@ -89,11 +87,11 @@ function jpegDimensions(bytes: Uint8Array): Dimensions {
 
 export function detectImageFormat(bytes: Uint8Array): ImageFormat {
   if (PNG_SIGNATURE.every((value, index) => bytes[index] === value)) {
-    pngDimensions(bytes);
+    validatePng(bytes);
     return 'png';
   }
   if (bytes[0] === 0xff && bytes[1] === 0xd8) {
-    jpegDimensions(bytes);
+    validateJpeg(bytes);
     return 'jpg';
   }
   throw new Error('Only JPEG and PNG images are supported. Export HEIC or Live Photos as a still JPEG or PNG, then import that file.');
@@ -101,126 +99,4 @@ export function detectImageFormat(bytes: Uint8Array): ImageFormat {
 
 export function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-function sourceString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
-}
-
-function normalizeOffset(value: string | null): string | null {
-  if (!value) return null;
-  if (value.trim() === 'Z') return 'Z';
-  const match = /^([+-])(\d{2}):?(\d{2})$/.exec(value.trim());
-  if (!match || Number(match[2]) > 23 || Number(match[3]) > 59) return null;
-  return `${match[1]}${match[2]}:${match[3]}`;
-}
-
-function captureTime(raw: Record<string, unknown>): Pick<
-  ImageMetadata,
-  'capturedAt' | 'captureTimeRaw' | 'captureTimeOffset' | 'captureTimeStatus' | 'warning'
-> {
-  const original = sourceString(raw.DateTimeOriginal);
-  const source = original ?? sourceString(raw.CreateDate) ?? sourceString(raw.DateTimeDigitized);
-  if (!source) {
-    return {
-      capturedAt: null,
-      captureTimeRaw: null,
-      captureTimeOffset: null,
-      captureTimeStatus: 'missing_from_received_file',
-    };
-  }
-  const offsetRaw = sourceString(original ? raw.OffsetTimeOriginal : raw.OffsetTimeDigitized);
-  const subsecondRaw = sourceString(original ? raw.SubSecTimeOriginal : raw.SubSecTimeDigitized);
-  const match = /^(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/.exec(source.trim());
-  const unavailable = {
-    capturedAt: null,
-    captureTimeRaw: source,
-    captureTimeOffset: offsetRaw,
-    captureTimeStatus: 'missing_from_received_file' as const,
-    warning: 'The source capture date could not be interpreted; its original value is preserved in metadata.',
-  };
-  if (!match) return unavailable;
-  const [, year, month, day, hour, minute, second, sourceFraction, inlineOffset] = match;
-  const yearNumber = Number(year);
-  const monthNumber = Number(month);
-  const dayNumber = Number(day);
-  const leap = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
-  const monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (monthNumber < 1 || monthNumber > 12
-    || dayNumber < 1 || dayNumber > monthDays[monthNumber - 1]
-    || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) {
-    return unavailable;
-  }
-  const offset = normalizeOffset(offsetRaw ?? inlineOffset ?? null);
-  const fraction = sourceFraction ?? (subsecondRaw && /^\d+$/.test(subsecondRaw.trim()) ? subsecondRaw.trim() : null);
-  return {
-    capturedAt: `${year}-${month}-${day}T${hour}:${minute}:${second}${fraction ? `.${fraction}` : ''}${offset ?? ''}`,
-    captureTimeRaw: source,
-    captureTimeOffset: offsetRaw ?? inlineOffset ?? null,
-    captureTimeStatus: offset ? 'source_offset' : 'timezone_unknown',
-    ...((offsetRaw || inlineOffset) && !offset ? {
-      warning: 'The source timezone offset could not be interpreted; capture time is kept without an assumed timezone.',
-    } : {}),
-  };
-}
-
-/** Keep decimal coordinates and signed altitude in metres without the raw GPS block. */
-export function gpsMetadata(raw: Record<string, unknown>): Pick<ImageMetadata, 'latitude' | 'longitude' | 'altitude'> {
-  const gps: Pick<ImageMetadata, 'latitude' | 'longitude' | 'altitude'> = {};
-  if (typeof raw.latitude === 'number' && Number.isFinite(raw.latitude) && Math.abs(raw.latitude) <= 90) {
-    gps.latitude = raw.latitude;
-  }
-  if (typeof raw.longitude === 'number' && Number.isFinite(raw.longitude) && Math.abs(raw.longitude) <= 180) {
-    gps.longitude = raw.longitude;
-  }
-  const reference = Array.isArray(raw.GPSAltitudeRef) || raw.GPSAltitudeRef instanceof Uint8Array
-    ? raw.GPSAltitudeRef[0] : raw.GPSAltitudeRef;
-  if (typeof raw.GPSAltitude === 'number' && Number.isFinite(raw.GPSAltitude)
-    && raw.GPSAltitude >= 0 && (reference === 0 || reference === 1)) {
-    gps.altitude = reference === 1 ? -raw.GPSAltitude : raw.GPSAltitude;
-  }
-  return gps;
-}
-
-export async function extractMetadata(bytes: Uint8Array): Promise<ImageMetadata> {
-  const format = detectImageFormat(bytes);
-  const dimensions = format === 'png' ? pngDimensions(bytes) : jpegDimensions(bytes);
-  let raw: Record<string, unknown> = {};
-  let warning: string | undefined;
-  try {
-    const parsed: unknown = await exifr.parse(bytes, {
-      translateKeys: true,
-      translateValues: false,
-      reviveValues: false,
-      tiff: true,
-      exif: true,
-      gps: true,
-      ifd1: false,
-      xmp: false,
-      iptc: false,
-      icc: false,
-      ihdr: true,
-    });
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      raw = parsed as Record<string, unknown>;
-    }
-  } catch {
-    warning = 'Some source metadata could not be read. The received image bytes were preserved unchanged.';
-  }
-  const capture = captureTime(raw);
-  const orientation = typeof raw.Orientation === 'number'
-    && Number.isInteger(raw.Orientation)
-    && raw.Orientation >= 1 && raw.Orientation <= 8
-    ? raw.Orientation : null;
-  return {
-    ...capture,
-    ...dimensions,
-    orientation,
-    cameraMake: sourceString(raw.Make),
-    cameraModel: sourceString(raw.Model),
-    ...gpsMetadata(raw),
-    ...((warning || capture.warning) ? {
-      warning: [warning, capture.warning].filter(Boolean).join(' '),
-    } : {}),
-  };
 }

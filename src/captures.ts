@@ -1,116 +1,92 @@
-import type { ImageRecord, MediaInput } from './images/model';
+import type { ManagedImage } from './images/model';
 import { MediaStore, type PendingCapture } from './images/store';
-import type { RecordLibrary } from './obsidian/library';
 import type { CaptureTarget, NoteImages } from './obsidian/notes';
 
+export type CaptureMethod = 'clipboard' | 'drop' | 'file';
+
 interface CaptureUI {
-  describe(record: ImageRecord): Promise<string | null>;
+  describe(image: ManagedImage, preview?: Uint8Array): Promise<string | null>;
   notify(message: string): void;
   report(error: unknown): void;
 }
 
 export class CaptureWorkflow {
-  private processing: Promise<unknown> = Promise.resolve();
+  private processing: Promise<void> = Promise.resolve();
 
   constructor(
     private store: MediaStore,
-    private library: Pick<RecordLibrary, 'ready' | 'prepare' | 'openRecord'>,
-    private notes: Pick<NoteImages, 'updateEmbeds' | 'recover' | 'sourceNote'>,
+    private notes: Pick<NoteImages, 'recover' | 'sourceNote' | 'syncDescription'>,
     private ui: CaptureUI,
   ) {}
 
-  capture(files: File[], target: CaptureTarget, method: MediaInput['method']): void {
-    // Stage every received image immediately. Caption dialogs run in sequence afterward.
+  capture(files: File[], target: CaptureTarget, method: CaptureMethod): void {
     const staged = Promise.allSettled(files.map(async file => this.store.stage({
       bytes: new Uint8Array(await file.arrayBuffer()),
-      name: file.name || undefined,
       lastModified: method === 'clipboard' ? undefined : file.lastModified,
-      method,
     }, target.path)));
-
-    this.enqueue(() => this.finishBatch(staged, target), () => target.release());
+    void this.enqueue(async () => {
+      const images = new Map<string, ManagedImage>();
+      const completed: PendingCapture[] = [];
+      for (const result of await staged) {
+        if (result.status === 'rejected') {
+          this.ui.report(result.reason);
+          continue;
+        }
+        try {
+          if (result.value.sourcePath !== target.path) await this.store.retarget(result.value, target.path);
+          const image = await this.describeCapture(result.value);
+          images.set(image.id, image);
+          completed.push(result.value);
+        } catch (error) {
+          this.ui.report(error);
+        }
+      }
+      if (images.size) {
+        await target.insert([...images.values()]);
+        for (const pending of completed) await this.store.complete(pending);
+      }
+    }, () => target.release());
   }
 
   recover(): void {
-    this.enqueue(async () => {
-      await this.library.ready();
-      const captures = await this.store.pendingCaptures();
-      if (!captures.length) {
-        this.ui.notify('No interrupted captures to recover.');
-        return;
-      }
-
+    void this.enqueue(async () => {
+      const pending = await this.store.pendingCaptures();
       let recovered = 0;
-      for (const pending of captures) {
+      for (const capture of pending) {
         try {
-          const source = this.notes.sourceNote(pending.sourcePath);
-          const prepared = await this.library.prepare(pending);
-          const description = await this.ui.describe(prepared.record);
-          const record = await this.store.describe(prepared, description, source?.path ?? pending.sourcePath,
-            (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
-          await this.notes.recover(record, pending.sourcePath);
-          await this.store.complete(pending);
-          await this.library.openRecord(record);
+          if (!this.notes.sourceNote(capture.sourcePath)) throw new Error('Restore the original note before recovering its image.');
+          const image = await this.describeCapture(capture);
+          await this.notes.recover(image, capture.sourcePath);
+          await this.store.complete(capture);
           recovered++;
         } catch (error) {
           this.ui.report(error);
         }
       }
-      this.ui.notify(recovered === captures.length
-        ? 'Interrupted images recovered.'
-        : `Recovered ${recovered} of ${captures.length} interrupted captures. Unresolved captures remain staged.`);
+      this.ui.notify(`Recovered ${recovered} of ${pending.length} interrupted image captures.`);
     });
   }
 
-  // Renames share this queue so record paths cannot change halfway through a capture.
-  enqueue(operation: () => Promise<void>, cleanup?: () => void): void {
-    this.processing = this.processing.then(operation, operation).catch(error => {
-      cleanup?.();
-      this.ui.report(error);
-    });
+  enqueue(operation: () => Promise<void>, cleanup?: () => void): Promise<void> {
+    this.processing = this.processing.then(operation, operation).catch(error => this.ui.report(error)).finally(cleanup);
+    return this.processing;
   }
 
-  private async finishBatch(staged: Promise<PromiseSettledResult<PendingCapture>[]>, target: CaptureTarget): Promise<void> {
-    await this.library.ready();
-    const records: ImageRecord[] = [];
-    const completed: PendingCapture[] = [];
-
-    for (const outcome of await staged) {
-      if (outcome.status === 'rejected') {
-        this.ui.report(outcome.reason);
-        continue;
-      }
+  private async describeCapture(pending: PendingCapture): Promise<ManagedImage> {
+    const prepared = await this.store.prepare(pending);
+    const description = prepared.duplicate && prepared.record.description
+      ? null : await this.ui.describe(prepared.record, prepared.preview);
+    const image = await this.store.describe(prepared, description);
+    if (prepared.duplicate && image.description !== prepared.record.description) {
       try {
-        records.push(await this.describeCapture(outcome.value, target));
-        completed.push(outcome.value);
+        const {skipped, conflicts} = await this.notes.syncDescription(prepared.record, image);
+        if (skipped || conflicts.length) {
+          this.ui.notify(`Description saved. Skipped ${skipped} embed label(s) and ${conflicts.length} note(s) that could not be updated.`);
+        }
       } catch (error) {
         this.ui.report(error);
       }
     }
-
-    if (records.length) {
-      await target.insert(latestBatchRecords(records, this.store.allRecords()));
-      for (const pending of completed) await this.store.complete(pending);
-    }
-    target.release();
+    return image;
   }
-
-  private async describeCapture(pending: PendingCapture, target: CaptureTarget): Promise<ImageRecord> {
-    if (pending.sourcePath !== target.path) await this.store.retarget(pending, target.path);
-    const prepared = await this.library.prepare(pending);
-    const description = await this.ui.describe(prepared.record);
-    return this.store.describe(prepared, description, target.path,
-      (previous, next, journal) => this.notes.updateEmbeds(previous, next, journal));
-  }
-}
-
-/** Repeated images in a batch share the final description and retain their first position. */
-export function latestBatchRecords(records: ImageRecord[], latest: ImageRecord[]): ImageRecord[] {
-  const current = new Map(latest.map(record => [record.id, record]));
-  const seen = new Set<string>();
-  return records.flatMap(record => {
-    if (seen.has(record.id)) return [];
-    seen.add(record.id);
-    return [current.get(record.id) ?? record];
-  });
 }

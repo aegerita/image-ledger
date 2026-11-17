@@ -1,25 +1,34 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { extractMetadata, sha256 } from '../src/images/media';
-import { markdownEmbed, parseRecord, parseRecordSnapshot, serializeSidecar } from '../src/images/records';
+import { sha256 } from '../src/images/media';
+import { createDescriptionCodec, SUPPORTED_EXIFTOOL_VERSIONS } from '../src/images/description';
+import { markdownEmbed } from '../src/images/markdown';
 import { createTestVault, markerName, sourceNote, otherNote } from './test-vault';
 import { PNG, jpegWithExif } from '../tests/fixtures';
+import { readExif } from '../tests/exif';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const artifactNames = ['main.js', 'manifest.json', 'styles.css'];
 const timeoutMs = 90_000;
 type Phase = 'main' | 'recovery';
 export interface SmokeReceipt { runId: string; phase: Phase; status: string; error?: string; [key: string]: unknown }
-interface Config { vault: string; runId: string; deadline: number; phase: Phase; artifacts: Record<string, string> }
+interface ExifToolIdentity { path: string; sha256: string }
+interface Config { vault: string; runId: string; deadline: number; phase: Phase; artifacts: Record<string, string>; exiftool: ExifToolIdentity }
+
+function cliCommand(binary: string, vault: string | undefined, commandArgs: string[]): {command: string; args: string[]} {
+  const args = vault ? [`vault=${path.basename(vault)}`] : [];
+  if (path.basename(binary) === 'obsidian-cli') return {command: binary, args: [...args, ...commandArgs]};
+  return {command: '/usr/bin/script', args: ['-q', '/dev/null', binary, ...args, ...commandArgs]};
+}
 
 export function cliInvocation(binary: string, vault: string | undefined, code: string): {command: string; args: string[]} {
-  const args = vault ? [`vault=${path.basename(vault)}`] : [];
-  return {command: '/usr/bin/script', args: ['-q', '/dev/null', binary, ...args, 'eval', `code=${code}`]};
+  return cliCommand(binary, vault, ['eval', `code=${code}`]);
 }
 
 export async function runCommand(command: string, args: string[], deadline: number, options: {cwd?: string; timeoutMs?: number} = {}): Promise<string> {
@@ -107,7 +116,7 @@ export async function waitForSelectedVault(vault: string, deadline: number, invo
   throw new Error(`Timed out confirming generated vault path. Last CLI output: ${last}`);
 }
 
-export async function verifyTrustTarget(vault: string, artifacts: Record<string, string>): Promise<void> {
+export async function verifyTrustTarget(vault: string, artifacts: Record<string, string>, exiftool: ExifToolIdentity): Promise<void> {
   assert.equal(await realpath(vault), vault, 'Trust target must be canonical');
   const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
   assert.equal(marker.version, 1, 'Trust requires a generated vault');
@@ -121,9 +130,13 @@ export async function verifyTrustTarget(vault: string, artifacts: Record<string,
   assert.deepEqual(await readdir(path.join(vault, '.obsidian/plugins')), ['image-ledger'], 'Trust target contains another plugin');
   assert.deepEqual(Object.keys(artifacts).sort(), [...artifactNames].sort());
   for (const [name, hash] of Object.entries(artifacts)) assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', name))), hash, 'Trust build changed');
+  assert.equal(await realpath(exiftool.path), exiftool.path, 'ExifTool path must be canonical');
+  assert.equal(sha256(await readFile(exiftool.path)), exiftool.sha256, 'ExifTool executable changed');
+  assert.deepEqual(JSON.parse(await readFile(path.join(vault, '.obsidian/plugins/image-ledger/data.json'), 'utf8')),
+    {exiftoolPath: exiftool.path}, 'Unexpected generated plugin settings');
 }
 
-export async function validateFinalVault(vault: string, artifacts: Record<string, string>): Promise<{records: number; pending: number; missing: number; staging: number}> {
+export async function validateFinalVault(vault: string, artifacts: Record<string, string>, exiftoolPath: string): Promise<{images: number; pending: number; staging: number}> {
   const walk = async (directory: string): Promise<string[]> => {
     const result: string[] = [];
     for (const entry of await readdir(path.join(vault, directory), {withFileTypes: true}).catch(error => {if (error.code === 'ENOENT') return []; throw error;})) {
@@ -134,52 +147,49 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
     return result;
   };
   const files = await walk('');
-  const recordFiles = files.filter(file => /(?:^|\/)image-records\/[^/]+\.md$/.test(file));
+  assert.ok(!files.some(file => /(?:^|\/)image-records\/|\.xmp$|(?:^|\/)image-library\.base$/i.test(file)), 'Record, sidecar, or Bases file created');
   const images = files.filter(file => /(?:^|\/)images\/[^/]+\.(jpg|png)$/.test(file));
-  assert.equal(recordFiles.length, 2, 'Expected one JPEG record and one PNG record');
   assert.equal(images.length, 2, 'Expected exactly two managed payloads');
+  for (const image of images) assert.match(path.posix.basename(image), /^[0-9a-f]{64}\.(jpg|png)$/, `Invalid managed filename: ${image}`);
   const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
   assert.equal(marker.version, 1);
-  const fixtureHashes = new Set<string>();
-  for (const name of ['sample-exif.jpg', 'sample.png']) {
-    const hash = sha256(await readFile(path.join(vault, 'fixtures', name)));
-    assert.equal(hash, marker.fixtures[name], 'Fixture changed'); fixtureHashes.add(hash);
-  }
-  const recordHashes = new Set<string>();
-  for (const file of recordFiles) {
-    const text = await readFile(path.join(vault, file), 'utf8');
-    const record = parseRecord(text);
-    assert.ok(record, `Invalid record: ${file}`);
-    assert.equal(path.posix.dirname(file), 'Archive/image-records', 'Record did not remain in the renamed folder');
-    assert.deepEqual(record, parseRecordSnapshot(text), 'Frontmatter and snapshot differ');
-    assert.equal(record.recordPath, file);
-    assert.equal(record.captionStatus, 'confirmed', 'Unfinished description');
-    const expectedSources = [sourceNote, otherNote];
-    if (record.format === 'png') expectedSources.push('Closed-editor.md', 'Menu-prototype.md');
-    assert.deepEqual(new Set(record.sourceNotes), new Set(expectedSources), 'Capture note backlinks must match');
-    const bytes = await readFile(path.join(vault, record.imagePath));
-    assert.equal(sha256(bytes), record.sha256); assert.equal(bytes.length, record.bytes);
-    assert.deepEqual(await extractMetadata(bytes), record.metadata, 'Payload metadata differs from record');
-    assert.equal(await readFile(path.join(vault, record.sidecarPath), 'utf8'), serializeSidecar(record), 'XMP differs from record');
-    assert.ok(images.includes(record.imagePath), 'Payload path is outside managed images');
-    recordHashes.add(record.sha256);
-    for (const note of record.sourceNotes) {
+  const codec = createDescriptionCodec(exiftoolPath);
+  for (const [name, extension, description, altText] of [
+    ['sample-exif.jpg', '.jpg', 'Edited synthetic JPEG.', ['Edited synthetic JPEG.', 'Edited synthetic JPEG.']],
+    ['sample.png', '.png', 'Recovered synthetic PNG.', ['Recovered synthetic PNG.', 'Recovered synthetic PNG.']],
+  ] as const) {
+    const fixture = await readFile(path.join(vault, 'fixtures', name));
+    assert.equal(sha256(fixture), marker.fixtures[name], 'Fixture changed');
+    const expected = await codec.inspect(fixture);
+    const imagePath = images.find(file => path.posix.basename(file) === expected.id + extension);
+    assert.ok(imagePath, `Missing normalized image for ${name}`);
+    const bytes = await readFile(path.join(vault, imagePath));
+    const image = await codec.inspect(bytes);
+    assert.deepEqual(image, {id: expected.id, description}, 'Embedded description or normalized hash differs');
+    assert.notEqual(sha256(bytes), sha256(fixture), 'Description must change the file bytes');
+    assert.deepEqual(await readExif(bytes), await readExif(fixture), 'Image metadata changed');
+    for (const [index, note] of [sourceNote, otherNote].entries()) {
       const text = await readFile(path.join(vault, note), 'utf8');
-      assert.equal(text.split(markdownEmbed(record, note)).length - 1, 1, 'Missing/duplicate current image embed');
-      const target = path.posix.relative(path.posix.dirname(note), record.imagePath).split('/').map(encodeURIComponent).join('/');
+      assert.equal(text.split(markdownEmbed({id: image.id, imagePath, description: altText[index]}, note)).length - 1, 1, 'Missing/duplicate image embed');
+      const target = path.posix.relative(path.posix.dirname(note), imagePath).split('/').map(encodeURIComponent).join('/');
       const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      assert.equal([...text.matchAll(new RegExp(`!\\[[^\\n]*\\]\\(${escaped}\\)`, 'g'))].length, 1, 'Stale/multiple alt labels');
+      assert.equal([...text.matchAll(new RegExp(`!\\[[^\\n]*\\]\\(${escaped}\\)`, 'g'))].length, 1, 'Duplicate image embed');
+      assert.ok(!text.includes('[Image details]'), 'Record link created');
     }
   }
-  assert.deepEqual(recordHashes, fixtureHashes, 'Managed images must match both fixtures');
-  assert.deepEqual(await readdir(path.join(vault, '.image-ledger/staging')), [], 'Staging is not empty');
-  assert.deepEqual(await readdir(path.join(vault, '.image-ledger/operations')), [], 'Description operations are not empty');
+  for (const folder of ['staging', 'operations']) {
+    const entries = await readdir(path.join(vault, '.image-ledger', folder)).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(entries, [], `Unfinished ${folder} files remain`);
+  }
   assert.deepEqual(Object.keys(artifacts).sort(), [...artifactNames].sort());
   for (const file of artifactNames) {
     assert.equal(sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', file))), artifacts[file], 'Installed build changed');
     assert.equal(sha256(await readFile(path.join(repo, file))), artifacts[file], 'Source build changed during smoke test');
   }
-  return {records: 2, pending: 0, missing: 0, staging: 0};
+  return {images: 2, pending: 0, staging: 0};
 }
 
 function readinessCode(config: Config, nonce: string, file: string): string {
@@ -201,14 +211,22 @@ async function runSmoke(): Promise<void> {
     process.exit(1);
   }, timeoutMs);
   try {
+    const executable = process.env.EXIFTOOL;
+    assert.ok(executable && path.isAbsolute(executable), 'Set EXIFTOOL to the absolute path of a supported ExifTool executable');
+    const executablePath = await realpath(executable);
+    const version = (await runCommand(executablePath, ['-config', '', '-ver'], deadline)).trim();
+    assert.ok(SUPPORTED_EXIFTOOL_VERSIONS.includes(version), `Smoke requires ExifTool ${SUPPORTED_EXIFTOOL_VERSIONS.join(' or ')}`);
+    const exiftool = {path: executablePath, sha256: sha256(await readFile(executablePath))};
     await runCommand('npm', ['run', 'build'], deadline, {cwd: repo, timeoutMs: 30_000});
-    vault = await realpath(await createTestVault());
+    vault = await realpath(await createTestVault(undefined, executablePath));
     const directory = path.join(vault, '.image-ledger-smoke');
     await mkdir(directory);
     const host = path.join(directory, 'host.cjs');
     await copyFile(path.join(repo, 'scripts/obsidian-smoke-host.cjs'), host);
     const artifacts = Object.fromEntries(await Promise.all(artifactNames.map(async file => [file, sha256(await readFile(path.join(repo, file)))])));
-    const binary = process.env.OBSIDIAN_BIN ?? '/Applications/Obsidian.app/Contents/MacOS/Obsidian';
+    const standaloneCli = '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli';
+    const binary = process.env.OBSIDIAN_BIN
+      ?? (existsSync(standaloneCli) ? standaloneCli : '/Applications/Obsidian.app/Contents/MacOS/Obsidian');
     const invoke = async (code: string, selectedVault?: string, commandTimeout = 10_000) => {
       const command = cliInvocation(binary, selectedVault, code);
       return runCommand(command.command, command.args, deadline, {timeoutMs: commandTimeout});
@@ -217,12 +235,14 @@ async function runSmoke(): Promise<void> {
     // Only the newly generated path is passed to the app's existing vault-open handler.
     const boot = `(()=>{const fs=require('node:fs'),p=require('node:path'),assert=require('node:assert/strict'),v=${JSON.stringify(vault)},m=JSON.parse(fs.readFileSync(p.join(v,${JSON.stringify(markerName)}),'utf8'));assert.equal(fs.realpathSync(v),v);assert.equal(m.version,1);for(const [name,hash] of Object.entries(m.fixtures)){assert.ok(['sample.png','sample-exif.jpg'].includes(name));assert.equal(require('node:crypto').createHash('sha256').update(fs.readFileSync(p.join(v,'fixtures',name))).digest('hex'),hash)}require('electron').ipcRenderer.sendSync('vault-open',v,false)})()`;
     await invoke(boot);
-    const selected = `vault=${path.basename(vault)}`;
-    await waitForSelectedVault(vault, Math.min(deadline, Date.now() + 10_000), limit => runCommand('/usr/bin/script', ['-q', '/dev/null', binary, selected, 'vault', 'info=path'], deadline, {timeoutMs: limit}));
-    await verifyTrustTarget(vault, artifacts);
-    await runCommand('/usr/bin/script', ['-q', '/dev/null', binary, selected, 'plugins:restrict', 'off'], deadline);
+    const selection = cliCommand(binary, vault, ['vault', 'info=path']);
+    await waitForSelectedVault(vault, Math.min(deadline, Date.now() + 10_000),
+      limit => runCommand(selection.command, selection.args, deadline, {timeoutMs: limit}));
+    await verifyTrustTarget(vault, artifacts, exiftool);
+    const trust = cliCommand(binary, vault, ['plugins:restrict', 'off']);
+    await runCommand(trust.command, trust.args, deadline);
     await writeFile(path.join(directory, 'trust.json'), JSON.stringify({runId, vault, status: 'TRUSTED_GENERATED_ONLY', plugin: 'image-ledger', artifacts}, null, 2) + '\n', {flag: 'wx'});
-    const main: Config = {vault, runId, deadline, phase: 'main', artifacts};
+    const main: Config = {vault, runId, deadline, phase: 'main', artifacts, exiftool};
     const runPhase = async (config: Config, terminal: string) => {
       const ready = {runId, phase: config.phase, nonce: randomUUID(), vault: vault!};
       const readyPath = path.join(directory, config.phase + '-ready.json');
@@ -237,8 +257,8 @@ async function runSmoke(): Promise<void> {
     assert.equal(checkpoint.runId, runId, 'Reload checkpoint belongs to another run');
     await invoke(`(()=>{const fs=require('node:fs'),assert=require('node:assert/strict'),c=${JSON.stringify(main)};assert.equal(fs.realpathSync(app.vault.adapter.getBasePath()),c.vault);const h=require(${JSON.stringify(host)});h.verifyVault(app,c);assert.equal(app.commands.executeCommandById('app:reload'),true)})()`, vault);
     await runPhase({...main, phase: 'recovery'}, 'PASS');
-    const files = await validateFinalVault(vault, artifacts);
-    const final = {runId, status: 'PASS', vault, durationMs: Date.now() - started, files, methods: 'Actual Obsidian plugin/editor/modal/Bases controls; generated paste/drop events. Native OS gestures not tested.', receipts: ['main.json', 'recovery.json']};
+    const files = await validateFinalVault(vault, artifacts, executablePath);
+    const final = {runId, status: 'PASS', vault, durationMs: Date.now() - started, files, methods: 'Actual Obsidian plugin, editor, modal and menu handlers; generated paste/drop events. Native OS gestures not tested.', receipts: ['main.json', 'recovery.json']};
     await writeFile(path.join(directory, 'result.json'), JSON.stringify(final, null, 2) + '\n', {flag: 'wx'});
     console.log(`PASS in ${(final.durationMs / 1000).toFixed(1)}s. Receipts: ${directory}`);
   } catch (error) {

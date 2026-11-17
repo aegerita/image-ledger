@@ -1,205 +1,90 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { setImmediate } from 'node:timers/promises';
-import { CaptureWorkflow, latestBatchRecords } from '../src/captures';
-import { MediaStore, type VaultIO } from '../src/images/store';
-import type { ProjectionJournal } from '../src/images/operations';
-import type { CaptureTarget } from '../src/obsidian/notes';
-import { PNG } from './fixtures';
-import type { ImageRecord } from '../src/images/model';
+import { CaptureWorkflow } from '../src/captures';
+import { JPEG, PNG } from './fixtures';
+import { storageFixture } from './storage-fixture';
+import type { ManagedImage } from '../src/images/model';
 
-function record(id: string, description: string): ImageRecord {
-  return {
-    schemaVersion: 2, id, description, captionStatus: 'confirmed',
-    imagePath: `images/${id}.jpg`, recordPath: `image-records/${id}.md`, sidecarPath: `images/${id}.xmp`,
-    sourceName: null, sourceLastModified: null, ingestMethod: 'clipboard',
-    importedAt: '2026-10-17T16:00:00Z', sourceNotes: ['Projects/Research.md'],
-    sha256: 'a'.repeat(64), bytes: 100, format: 'jpg',
-    metadata: {
-      capturedAt: null, captureTimeRaw: null, captureTimeOffset: null, captureTimeStatus: 'missing_from_received_file',
-      width: 2, height: 3, orientation: null, cameraMake: null, cameraModel: null,
-    },
-  };
-}
-
-test('a duplicate image has one embed using its latest caption, preserving first occurrence order', () => {
-  const first = record('first', 'First caption');
-  const second = record('second', 'Second image');
-  const revised = { ...first, description: 'Final caption', captionStatus: 'pending' as const };
-  const input = [first, second, revised];
-  const before = structuredClone(input);
-  const result = latestBatchRecords(input, [revised, second]);
-  assert.deepEqual(result, [revised, second]);
-  assert.equal(result[0].description, 'Final caption');
-  assert.deepEqual(input, before);
-});
-
-test('a record not in the refreshed catalog remains renderable', () => {
-  const item = record('first', 'Available caption');
-  assert.deepEqual(latestBatchRecords([item, item], []), [item]);
-  assert.deepEqual(latestBatchRecords([], [item]), []);
-});
-
-function fixture(describe: (record: ImageRecord) => Promise<string | null> = async () => 'Saved image') {
-  const text = new Map<string, string>();
-  const bytes = new Map<string, Uint8Array>();
-  const folders = new Set<string>();
-  const io: VaultIO = {
-    checkTrash: () => {},
-    reserveId: async id => {
-      const reservation = `.image-ledger/ids/${id}`;
-      if (text.has(reservation)) return false;
-      text.set(reservation, '');
-      return true;
-    },
-    exists: async path => text.has(path) || bytes.has(path) || folders.has(path),
-    read: async path => {
-      const value = text.get(path);
-      assert.notEqual(value, undefined, `Missing file: ${path}`);
-      return value!;
-    },
-    readBinary: async path => {
-      const value = bytes.get(path);
-      assert.ok(value, `Missing payload: ${path}`);
-      return value.slice();
-    },
-    write: async (path, value) => { text.set(path, value); },
-    process: async (path, update) => {
-      const value = text.get(path);
-      assert.notEqual(value, undefined, `Missing file: ${path}`);
-      text.set(path, update(value!));
-    },
-    writeBinary: async (path, value) => { bytes.set(path, value.slice()); },
-    mkdir: async path => { folders.add(path); },
-    remove: async path => { text.delete(path); bytes.delete(path); },
-    trash: async path => { text.delete(path); bytes.delete(path); },
-    recordPaths: async () => [...text.keys()].filter(path => /(?:^|\/)image-records\/[^/]+\.md$/.test(path)),
-    mediaPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => /\.(?:jpg|png|xmp)$/.test(path) && !path.startsWith('.')),
-    pendingPaths: async () => [...text.keys(), ...bytes.keys()].filter(path => path.startsWith('.image-ledger/staging/')),
-    operationPaths: async () => [...text.keys()].filter(path => /^\.image-ledger\/operations\/[^/]+\.json$/.test(path)),
-  };
-  const store = new MediaStore(io, {storageLayout: 'note-year'});
+function captures(f: ReturnType<typeof storageFixture>, describe: () => Promise<string | null> = async () => 'Caption') {
   const errors: unknown[] = [];
-  const notifications: string[] = [];
-  const recovered: ImageRecord[] = [];
-  const library = {
-    ready: () => store.initialize((previous, next, journal) => notes.updateEmbeds(previous, next, journal)),
-    prepare: (pending: Parameters<MediaStore['prepare']>[0]) =>
-      store.prepare(pending, (previous, next, journal) => notes.updateEmbeds(previous, next, journal)),
-    openRecord: async () => {},
-  };
-  const notes = {
-    updateEmbeds: async (_previous: ImageRecord, _next: ImageRecord, _journal?: ProjectionJournal) => {},
-    recover: async (record: ImageRecord) => { recovered.push(record); },
-    sourceNote: () => undefined,
-  };
-  const workflow = new CaptureWorkflow(store, library, notes, {
-    describe,
-    report: error => { errors.push(error); },
-    notify: message => { notifications.push(message); },
-  });
-  const target: CaptureTarget & {records: ImageRecord[]; released: boolean} = {
-    path: '2026/Research.md', records: [], released: false,
-    insert: async records => { target.records = records; },
-    release: () => { target.released = true; },
-  };
-  const file = () => new File([PNG], 'sample.png', {type: 'image/png'});
-  const drain = () => new Promise<void>(resolve => workflow.enqueue(async () => { resolve(); }));
-  return {io, store, workflow, target, file, drain, errors, notifications, recovered, text, notes};
+  const synced: [string, string][] = [];
+  let recovered: ManagedImage | undefined;
+  const workflow = new CaptureWorkflow(f.store, {
+    sourceNote: () => ({} as never),
+    recover: async image => { recovered = image; },
+    syncDescription: async (previous, next) => {
+      synced.push([previous.description, next.description]);
+      return {updated: 0, skipped: 0, conflicts: []};
+    },
+  }, {describe, notify: () => {}, report: error => { errors.push(error); }});
+  return {workflow, errors, synced, recovered: () => recovered};
 }
 
-test('staging failures settle while an earlier caption holds the shared capture and rename queue', async () => {
-  let enterPrompt!: () => void;
-  let finishPrompt!: (value: string) => void;
-  const promptStarted = new Promise<void>(resolve => { enterPrompt = resolve; });
-  const prompt = new Promise<string>(resolve => { finishPrompt = resolve; });
-  const f = fixture(async () => { enterPrompt(); return prompt; });
-  f.workflow.capture([f.file()], f.target, 'clipboard');
-  await promptStarted;
+const file = () => new File([JPEG], 'synthetic.jpg', {type: 'image/jpeg'});
 
-  const failure = new Error('Disk is full');
-  f.io.writeBinary = async () => { throw failure; };
-  const secondTarget = {...f.target, records: [], released: false};
-  f.workflow.capture([f.file()], secondTarget, 'clipboard');
-  let renamed = false;
-  f.workflow.enqueue(async () => { renamed = true; });
-
-  // Delaying consumption must not leave staging rejections unhandled.
-  await setImmediate();
-  assert.equal(renamed, false);
-  const receipts = [...f.text.keys()].filter(path => path.startsWith('.image-ledger/staging/') && path.endsWith('.json'));
-  assert.equal(receipts.length, 2, 'The queued batch must stage before its dialog can open');
-  finishPrompt('First image');
-  await f.drain();
-  assert.deepEqual(f.errors, [failure]);
-  assert.equal(renamed, true);
-  assert.equal(f.target.records.length, 1);
-  assert.equal(f.target.released, true);
-});
-
-test('failed note insertion retains staged bytes and recovery completes them afterward', async () => {
-  const f = fixture();
-  const failure = new Error('Note cannot be saved');
-  f.target.insert = async () => { throw failure; };
-  f.workflow.capture([f.file()], f.target, 'file');
-  await f.drain();
-  assert.deepEqual(f.errors, [failure]);
-  assert.equal(f.target.released, true);
-  const [pending] = await f.store.pendingCaptures();
-  assert.ok(pending);
-  assert.deepEqual(await f.io.readBinary(pending.dataPath), new Uint8Array(PNG));
-
-  f.workflow.recover();
-  await f.drain();
-  assert.equal(f.recovered.length, 1);
-  assert.equal(f.recovered[0].description, 'Saved image');
+test('capture embeds a batch once, silently reuses described duplicates, and releases the target', async () => {
+  const f = storageFixture();
+  let prompts = 0;
+  let released = 0;
+  const results: ManagedImage[][] = [];
+  const {workflow, errors} = captures(f, async () => { prompts++; return 'Caption'; });
+  const target = {path: 'Note.md', insert: async (images: ManagedImage[]) => { results.push(images); }, release: () => { released++; }};
+  workflow.capture([file(), file()], target, 'clipboard');
+  await workflow.enqueue(async () => {});
+  assert.equal(results[0].length, 1);
+  assert.equal(prompts, 1);
+  assert.equal(released, 1);
+  assert.deepEqual(errors, []);
   assert.deepEqual(await f.store.pendingCaptures(), []);
-  assert.deepEqual(f.notifications, ['Interrupted images recovered.']);
 });
 
-test('failed caption projection retains staging and recovery retries before committing the record', async () => {
-  const f = fixture();
-  const failure = new Error('Existing image note cannot be saved');
-  f.notes.updateEmbeds = async () => { throw failure; };
-  f.workflow.capture([f.file()], f.target, 'file');
-  await f.drain();
-  assert.deepEqual(f.errors, [failure]);
-  assert.equal(f.target.records.length, 0);
-  assert.equal(f.store.allRecords()[0].description, 'Description pending');
+test('failed note insertion retains staging and restart recovery inserts the committed image', async () => {
+  const f = storageFixture();
+  const first = captures(f);
+  let released = false;
+  first.workflow.capture([file()], {path: 'Note.md', insert: async () => { throw new Error('Note save failed'); }, release: () => { released = true; }}, 'clipboard');
+  await first.workflow.enqueue(async () => {});
+  assert.equal(first.errors.length, 1);
+  assert.equal(released, true);
   assert.equal((await f.store.pendingCaptures()).length, 1);
-
-  f.notes.updateEmbeds = async () => {};
-  f.workflow.recover();
-  await f.drain();
-
-  assert.equal(f.recovered[0].description, 'Saved image');
+  const restarted = captures(f);
+  restarted.workflow.recover();
+  await restarted.workflow.enqueue(async () => {});
+  assert.equal(restarted.recovered()?.description, 'Caption');
   assert.deepEqual(await f.store.pendingCaptures(), []);
 });
 
-test('a note renamed during its caption keeps the staged storage folder and updates its reference', async () => {
-  let notePath = '2026/Research.md';
-  const f = fixture(async () => {
-    notePath = '2027/Renamed.md';
-    return 'Renamed note image';
+test('missing recovery note preserves staged data and image', async () => {
+  const f = storageFixture();
+  await f.store.stage({bytes: JPEG}, 'Gone.md');
+  const errors: unknown[] = [];
+  const workflow = new CaptureWorkflow(f.store, {
+    sourceNote: () => undefined,
+    recover: async () => {},
+    syncDescription: async () => assert.fail('Missing note must not be updated'),
+  }, {
+    describe: async () => 'Caption', notify: () => {}, report: error => { errors.push(error); },
   });
-  Object.defineProperty(f.target, 'path', {get: () => notePath});
-  f.workflow.capture([f.file()], f.target, 'file');
-  await f.drain();
-  const [record] = f.target.records;
-  assert.match(record.imagePath, /^2026\/images\//);
-  assert.deepEqual(record.sourceNotes, ['2027/Renamed.md']);
-  assert.deepEqual(await f.store.pendingCaptures(), []);
-  assert.deepEqual(f.errors, []);
+  workflow.recover();
+  await workflow.enqueue(async () => {});
+  assert.equal(errors.length, 1);
+  assert.equal((await f.store.pendingCaptures()).length, 1);
 });
 
-test('a batch inserts duplicate images once using their final description', async () => {
-  const descriptions = ['First description', 'Final description'];
-  const f = fixture(async () => descriptions.shift()!);
-  f.workflow.capture([f.file(), f.file()], f.target, 'clipboard');
-  await f.drain();
-  assert.equal(f.store.allRecords().length, 1);
-  assert.equal(f.target.records.length, 1);
-  assert.equal(f.target.records[0].description, 'Final description');
-  assert.deepEqual(await f.store.pendingCaptures(), []);
-  assert.deepEqual(f.errors, []);
+test('a description added by a later duplicate keeps the first insertion position', async () => {
+  const f = storageFixture();
+  const captions = [null, 'PNG caption', 'JPEG caption'];
+  const {workflow, errors, synced} = captures(f, async () => captions.shift() ?? null);
+  const embedded: ManagedImage[] = [];
+  const target = {
+    path: 'Note.md',
+    insert: async (images: ManagedImage[]) => { embedded.push(...images); },
+    release: () => {},
+  };
+  const png = new File([PNG], 'synthetic.png', {type: 'image/png'});
+  workflow.capture([file(), png, file()], target, 'clipboard');
+  await workflow.enqueue(async () => {});
+  assert.deepEqual(errors, []);
+  assert.deepEqual(embedded.map(image => image.description), ['JPEG caption', 'PNG caption']);
+  assert.deepEqual(synced, [['', 'JPEG caption']]);
 });

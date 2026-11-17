@@ -2,22 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULTS, settingsFromData } from '../src/settings';
 
-test('settings use flat storage unless a current layout is explicitly saved', () => {
+test('saved settings retain current controls and discard obsolete record controls', () => {
   assert.deepEqual(settingsFromData(undefined), DEFAULTS);
   assert.deepEqual(settingsFromData(null), DEFAULTS);
-  assert.deepEqual(settingsFromData({interceptPaste: false, interceptDrop: true, showRecordLink: false}), {
-    interceptPaste: false, interceptDrop: true, showRecordLink: false, syncCustomAlt: false, storageLayout: 'flat',
+  assert.deepEqual(settingsFromData({interceptPaste: false, showRecordLink: true, syncCustomAlt: true}), {
+    interceptPaste: false,
+    interceptDrop: true,
+    storageLayout: 'flat',
+    exiftoolPath: 'exiftool',
   });
-  assert.equal(settingsFromData({}).storageLayout, 'flat');
   assert.equal(settingsFromData({storageLayout: 'import-year'}).storageLayout, 'import-year');
   assert.equal(settingsFromData({storageLayout: 'note-year'}).storageLayout, 'note-year');
+  assert.equal(settingsFromData({exiftoolPath: ' /usr/local/bin/exiftool '}).exiftoolPath, '/usr/local/bin/exiftool');
 });
 
-test('malformed saved settings cannot enable invalid toggle values', () => {
-  assert.deepEqual(settingsFromData('invalid'), DEFAULTS);
-  assert.deepEqual(settingsFromData([]), DEFAULTS);
+test('malformed saved settings use safe current defaults', () => {
+  for (const value of ['invalid', [], null]) assert.deepEqual(settingsFromData(value), DEFAULTS);
   assert.equal(settingsFromData({interceptPaste: 'false'}).interceptPaste, true);
   assert.equal(settingsFromData({storageLayout: 'invalid'}).storageLayout, 'flat');
-  assert.equal(settingsFromData({syncCustomAlt: 'true'}).syncCustomAlt, false);
-  assert.equal(settingsFromData({syncCustomAlt: true}).syncCustomAlt, true);
+  assert.equal(settingsFromData({exiftoolPath: '   '}).exiftoolPath, 'exiftool');
+  assert.equal(settingsFromData({exiftoolPath: 42}).exiftoolPath, 'exiftool');
 });

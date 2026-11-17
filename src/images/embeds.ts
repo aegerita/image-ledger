@@ -1,28 +1,15 @@
-import type { ImageRecord } from './model';
+import type { ManagedImage } from './model';
 import type { EmbedRange, NoteProjection } from './operations';
-import { markdownEmbed } from './records';
 import { posix } from 'node:path';
 import { parser } from '@lezer/markdown';
 
 export interface ManagedImageEmbed extends EmbedRange {
-  record: ImageRecord;
-  reference?: boolean;
-}
-
-export function escapePattern(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function imageTargetPattern(embed: string): string {
-  const target = embed.slice(embed.lastIndexOf('](') + 2, -1);
-  // Existing generated destinations can contain literal parentheses; alt text must stay exact.
-  return escapePattern(target)
-    .replace(/%28/g, '(?:%28|\\()')
-    .replace(/%29/g, '(?:%29|\\))');
+  record: ManagedImage;
+  alt?: EmbedRange;
 }
 
 /** Match managed destinations relative to this note, independent of their alt text. */
-export function managedImageEmbeds(text: string, sourcePath: string, records: ImageRecord[], includeReferences = false): ManagedImageEmbed[] {
+export function managedImageEmbeds(text: string, sourcePath: string, records: ManagedImage[], includeReferences = false): ManagedImageEmbed[] {
   const embeds: ManagedImageEmbed[] = [];
   const byPath = new Map(records.map(record => [record.imagePath, record]));
   const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
@@ -47,7 +34,7 @@ export function managedImageEmbeds(text: string, sourcePath: string, records: Im
   tree.iterate({
     enter(node) {
       if (node.name !== 'Image') return;
-      // Reference occurrences are inspected for save reports; cursor lookup remains inline-only.
+      // Deletion and recovery also inspect reference-style embeds.
       const url = node.node.getChild('URL');
       let target = url ? resolveImageTarget(text.slice(from + url.from, from + url.to), sourcePath) : undefined;
       if (!url && includeReferences) {
@@ -62,7 +49,10 @@ export function managedImageEmbeds(text: string, sourcePath: string, records: Im
       const record = target ? byPath.get(target) : undefined;
       if (record) {
         const embed: ManagedImageEmbed = {from: from + node.from, to: from + node.to, record};
-        if (!url) embed.reference = true;
+        if (url) {
+          const [open, close] = node.node.getChildren('LinkMark');
+          if (open && close) embed.alt = {from: from + open.to, to: from + close.from};
+        }
         embeds.push(embed);
       }
       // Images nested inside alt text are labels, not independently displayed images.
@@ -84,8 +74,8 @@ function resolveImageTarget(target: string, sourcePath: string): string | undefi
 }
 
 /** A selection must stay inside one embed; a caret uses an exclusive end offset. */
-export function findManagedImage(text: string, sourcePath: string, records: ImageRecord[], selection: number | EmbedRange): ManagedImageEmbed | undefined {
-  const {from, to} = typeof selection === 'number' ? {from: selection, to: selection} : selection;
+export function findManagedImage(text: string, sourcePath: string, records: ManagedImage[], selection: EmbedRange): ManagedImageEmbed | undefined {
+  const {from, to} = selection;
   return managedImageEmbeds(text, sourcePath, records).find(embed =>
     from >= embed.from && from < embed.to && to >= from && to <= embed.to);
 }
@@ -94,29 +84,14 @@ function referenceLabel(text: string): string {
   return text.trim().replace(/\s+/gu, ' ').toUpperCase();
 }
 
-/** Delete only parsed embeds and exact generated details links, leaving surrounding text intact. */
-export function deletionProjection(text: string, sourcePath: string, record: ImageRecord): NoteProjection {
+/** Delete only parsed embeds, leaving surrounding text intact. */
+export function deletionProjection(text: string, sourcePath: string, record: ManagedImage): NoteProjection {
   const beforeRanges: EmbedRange[] = managedImageEmbeds(text, sourcePath, [record], true)
     .map(({from, to}) => ({from, to}));
-  const target = markdownEmbed({...record, imagePath: record.recordPath}, sourcePath);
-  const details = '[Image details]' + target.slice(target.lastIndexOf('](') + 1);
-  const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
-  const offset = frontmatter?.[0].length ?? 0;
-  parser.parse(text.slice(offset)).iterate({
-    enter(node) {
-      if (node.name === 'Image') return false;
-      if (node.name === 'Link' && text.slice(offset + node.from, offset + node.to) === details) {
-        beforeRanges.push({from: offset + node.from, to: offset + node.to});
-        return false;
-      }
-    },
-  });
-  beforeRanges.sort((left, right) => left.from - right.from);
-  const plan: NoteProjection = {before: text, after: '', beforeRanges, ranges: []};
+  const plan: NoteProjection = {before: text, after: '', beforeRanges};
   let cursor = 0;
   for (const range of beforeRanges) {
     plan.after += text.slice(cursor, range.from);
-    plan.ranges.push({from: plan.after.length, to: plan.after.length});
     cursor = range.to;
   }
   plan.after += text.slice(cursor);
@@ -124,13 +99,13 @@ export function deletionProjection(text: string, sourcePath: string, record: Ima
 }
 
 /** Find wiki and ordinary links even before Obsidian has indexed a changed note. */
-export function deletionBlockers(text: string, sourcePath: string, record: ImageRecord, resolveWiki: (link: string) => string | undefined): string[] {
+export function deletionBlockers(text: string, sourcePath: string, record: ManagedImage, resolveWiki: (link: string) => string | undefined): string[] {
   const plan = deletionProjection(text, sourcePath, record);
   const excluded: EmbedRange[] = [];
   const blocked: string[] = [];
   const frontmatter = /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?---[ \t]*(?:\r?\n|$)/.exec(text);
   const offset = frontmatter?.[0].length ?? 0;
-  const managed = (target: string | undefined) => target === record.imagePath || target === record.recordPath;
+  const managed = (target: string | undefined) => target === record.imagePath;
   const resolve = (url: string) => {
     const relative = resolveImageTarget(url, sourcePath);
     if (managed(relative)) return relative;
@@ -157,7 +132,7 @@ export function deletionBlockers(text: string, sourcePath: string, record: Image
     enter(node) {
       const from = offset + node.from;
       const to = offset + node.to;
-      if (['FencedCode', 'CodeBlock', 'InlineCode', 'HTMLBlock', 'Comment'].includes(node.name)) {
+      if (['FencedCode', 'CodeBlock', 'InlineCode', 'HTMLBlock', 'CommentBlock', 'Comment'].includes(node.name)) {
         excluded.push({from, to});
         return false;
       }

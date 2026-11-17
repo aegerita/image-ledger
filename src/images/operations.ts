@@ -1,7 +1,7 @@
-import type { ImageRecord } from './model';
-import { assertVaultPath, isImageRecord, withoutRawMetadata } from './records';
+import type { ManagedImage } from './model';
+import { assertVaultPath } from './markdown';
 import { deletionProjection } from './embeds';
-import { isImageId } from './ids';
+import { isManagedPath } from './ids';
 
 export interface EmbedRange {
   from: number;
@@ -12,125 +12,42 @@ export interface NoteProjection {
   before: string;
   after: string;
   beforeRanges: EmbedRange[];
-  ranges: EmbedRange[];
 }
 
-export interface ProjectionJournal {
-  notes: Record<string, NoteProjection>;
-  checkpoint(): Promise<void>;
+export type DeletionNotes = Record<string, NoteProjection>;
+
+export interface DeletionOperation {
+  version: 2;
+  image: ManagedImage;
+  notes: DeletionNotes;
 }
-
-export interface DeletionAssets {
-  files: string[];
-  captures: {id: string; format: 'jpg' | 'png'}[];
-}
-
-export type RecordIntent =
-  | {kind: 'description'; description: string | null; source?: {from: string; to: string}}
-  | {kind: 'rename'; from: string; to: string}
-  | ({kind: 'delete'} & DeletionAssets)
-  | {kind: 'reconcile'};
-
-export interface RecordOperation {
-  version: 1;
-  recordPath: string;
-  baseline: ImageRecord;
-  target?: ImageRecord;
-  intent: RecordIntent;
-  synchronize: boolean;
-  discoveredNotes?: string[];
-  notes: Record<string, NoteProjection>;
-}
-
-export const OPERATION_DIR = '.image-ledger/operations';
 
 export function operationPath(id: string): string {
-  return `${OPERATION_DIR}/${id}.json`;
+  return `.image-ledger/operations/${id}.json`;
 }
 
-/** Receipts are writable vault data: refuse malformed plans without discarding them. */
-export function parseOperation(text: string, file: string): RecordOperation {
+/** Recompute approved edits before trusting a writable recovery receipt. */
+export function parseOperation(text: string, file: string): DeletionOperation {
   try {
-    const operation = JSON.parse(text) as RecordOperation;
-    if (operation.version !== 1 || !isImageRecord(operation.baseline)
-      || file !== operationPath(operation.baseline.id)
-      || typeof operation.synchronize !== 'boolean') throw new Error();
-    assertVaultPath(operation.recordPath);
-    if (!operation.recordPath.endsWith(`/image-records/${operation.baseline.id}.md`)
-      && operation.recordPath !== `image-records/${operation.baseline.id}.md`) throw new Error();
-    // A moved receipt still needs the historical target to recognize an earlier commit.
-    if (operation.target !== undefined && (!isImageRecord(operation.target)
-      || operation.target.id !== operation.baseline.id
-      || operation.target.sha256 !== operation.baseline.sha256)) throw new Error();
-    const intent = operation.intent;
-    if (intent.kind === 'description') {
-      if (intent.description !== null && (typeof intent.description !== 'string' || !intent.description.trim())) throw new Error();
-      if (intent.source) {
-        assertVaultPath(intent.source.from);
-        assertVaultPath(intent.source.to);
-        if (!intent.source.from.endsWith('.md') || !intent.source.to.endsWith('.md')) throw new Error();
-      }
-    } else if (intent.kind === 'rename') {
-      assertVaultPath(intent.from);
-      assertVaultPath(intent.to);
-    } else if (intent.kind === 'delete') {
-      if (!operation.synchronize || operation.recordPath !== operation.baseline.recordPath
-        || !Array.isArray(intent.files) || new Set(intent.files).size !== intent.files.length
-        || intent.files.some(path => ![operation.baseline.imagePath, operation.baseline.sidecarPath, operation.baseline.recordPath].includes(path))
-        || !Array.isArray(intent.captures)
-        || intent.captures.some(capture => !isImageId(capture.id) || !['jpg', 'png'].includes(capture.format))) throw new Error();
-    } else if (intent.kind !== 'reconcile') throw new Error();
-    if (operation.discoveredNotes !== undefined) {
-      if (!Array.isArray(operation.discoveredNotes)) throw new Error();
-      for (const source of operation.discoveredNotes) {
-        assertVaultPath(source);
-        if (!source.endsWith('.md')) throw new Error();
-      }
-    }
+    const operation = JSON.parse(text) as DeletionOperation;
+    const image = operation.image;
+    if (operation.version !== 2 || !image || !isManagedPath(image.imagePath)
+      || image.id !== image.imagePath.split('/').pop()!.split('.')[0]
+      || !/^[a-f0-9]{64}$/.test(image.checksum ?? '')
+      || typeof image.description !== 'string'
+      || file !== operationPath(image.id)) throw new Error();
+    assertVaultPath(image.imagePath);
     if (!operation.notes || typeof operation.notes !== 'object' || Array.isArray(operation.notes)) throw new Error();
-    if (!operation.synchronize && Object.keys(operation.notes).length) throw new Error();
+    const notes: DeletionNotes = Object.create(null);
     for (const [source, plan] of Object.entries(operation.notes)) {
       assertVaultPath(source);
-      if (!source.endsWith('.md')) throw new Error();
-      if (intent.kind === 'delete') {
-        if (source === operation.baseline.recordPath || !plan || typeof plan.before !== 'string'
-          || JSON.stringify(plan) !== JSON.stringify(deletionProjection(plan.before, source, operation.baseline))) throw new Error();
-      } else if (!validProjection(plan)) throw new Error();
+      if (!source.endsWith('.md') || !plan || typeof plan.before !== 'string') throw new Error();
+      const expected = deletionProjection(plan.before, source, image);
+      if (plan.after !== expected.after) throw new Error();
+      notes[source] = expected;
     }
-    operation.baseline.metadata = withoutRawMetadata(operation.baseline.metadata);
-    if (operation.target) operation.target.metadata = withoutRawMetadata(operation.target.metadata);
-    return operation;
+    return {...operation, notes};
   } catch {
-    throw new Error(`Invalid image save recovery receipt: ${file}. It was retained for inspection.`);
+    throw new Error(`Invalid image deletion receipt: ${file}. Keep it for inspection.`);
   }
-}
-
-function validRanges(ranges: EmbedRange[], content: string): boolean {
-  if (!Array.isArray(ranges)) return false;
-  let end = 0;
-  for (const range of ranges) {
-    if (!range || !Number.isSafeInteger(range.from) || !Number.isSafeInteger(range.to)
-      || range.from < end || range.to <= range.from || range.to > content.length) return false;
-    end = range.to;
-  }
-  return true;
-}
-
-function validProjection(plan: NoteProjection): boolean {
-  if (!plan || typeof plan.before !== 'string' || typeof plan.after !== 'string'
-    || !validRanges(plan.beforeRanges, plan.before) || !validRanges(plan.ranges, plan.after)
-    || plan.beforeRanges.length !== plan.ranges.length) return false;
-  let beforeEnd = 0;
-  let afterEnd = 0;
-  for (let index = 0; index < plan.ranges.length; index++) {
-    const before = plan.beforeRanges[index];
-    const after = plan.ranges[index];
-    if (plan.before.slice(beforeEnd, before.from) !== plan.after.slice(afterEnd, after.from)) return false;
-    for (const embed of [plan.before.slice(before.from, before.to), plan.after.slice(after.from, after.to)]) {
-      if (!/^!\[[^\n]*\]\([^\n]+\)$/.test(embed)) return false;
-    }
-    beforeEnd = before.to;
-    afterEnd = after.to;
-  }
-  return plan.before.slice(beforeEnd) === plan.after.slice(afterEnd);
 }

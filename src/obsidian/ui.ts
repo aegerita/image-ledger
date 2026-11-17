@@ -1,17 +1,17 @@
 import { Modal, PluginSettingTab, Setting, TFile, type App } from 'obsidian';
 import type ImageLedgerPlugin from '../main';
-import { normalizeDescription } from '../images/records';
+import { normalizeDescription } from '../images/markdown';
 import { isStorageLayout } from '../settings';
-import type { DeletePreview, SkippedEmbed } from './notes';
-import { managedImageEmbeds } from '../images/embeds';
-import type { DeletionAssets } from '../images/operations';
+import type { DeletePreview } from './notes';
 import type { ImageAudit } from '../images/store';
-import type { ImageRecord } from '../images/model';
+import type { ManagedImage } from '../images/model';
 
 export class DescriptionModal extends Modal {
   private submitted = false;
+  private previewUrl?: string;
 
-  constructor(app: App, private record: ImageRecord, private resolve: (value: string | null) => void) {
+  constructor(app: App, private record: ManagedImage, private resolve: (value: string | null) => void,
+    private preview?: Uint8Array) {
     super(app);
   }
 
@@ -19,13 +19,15 @@ export class DescriptionModal extends Modal {
     this.titleEl.setText('Describe this image');
     this.contentEl.addClass('image-ledger-description');
     const image = this.app.vault.getAbstractFileByPath(this.record.imagePath);
-    if (image instanceof TFile) {
-      this.contentEl.createEl('img', {
-        attr: {src: this.app.vault.getResourcePath(image), alt: 'Image being added'},
-      });
+    let src = image instanceof TFile ? this.app.vault.getResourcePath(image) : undefined;
+    if (this.preview) {
+      const type = this.record.imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      this.previewUrl = URL.createObjectURL(new Blob([Uint8Array.from(this.preview)], {type}));
+      src = this.previewUrl;
     }
+    if (src) this.contentEl.createEl('img', {attr: {src, alt: 'Image preview'}});
     this.contentEl.createEl('p', {
-      text: 'A short sentence becomes the image description and its searchable record.',
+      text: 'The description is saved inside the image and travels with exported copies.',
     });
     const input = this.contentEl.createEl('input', {
       type: 'text',
@@ -35,7 +37,7 @@ export class DescriptionModal extends Modal {
         maxlength: '500',
       },
     });
-    input.value = this.record.captionStatus === 'confirmed' ? this.record.description : '';
+    input.value = this.record.description;
     const error = this.contentEl.createEl('div', {
       cls: 'image-ledger-validation',
       attr: {'aria-live': 'polite'},
@@ -64,13 +66,15 @@ export class DescriptionModal extends Modal {
   }
 
   onClose(): void {
+    if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
     if (!this.submitted) this.resolve(null);
     this.contentEl.empty();
   }
 }
 
-export class RecordPicker extends Modal {
-  constructor(app: App, private records: ImageRecord[], private choose: (record: ImageRecord) => void) {
+export class ImagePicker extends Modal {
+  constructor(app: App, private records: ManagedImage[], private choose: (record: ManagedImage) => void,
+    private edit?: (record: ManagedImage) => void) {
     super(app);
   }
 
@@ -78,33 +82,54 @@ export class RecordPicker extends Modal {
     this.titleEl.setText('Choose an image');
     const input = this.contentEl.createEl('input', {
       type: 'search',
-      attr: {placeholder: 'Search descriptions, image IDs or notes', 'aria-label': 'Search images'},
+      attr: {placeholder: 'Search descriptions, image IDs or paths', 'aria-label': 'Search images'},
     });
+    const filter = this.contentEl.createEl('label', {cls: 'image-ledger-picker-filter'});
+    const pendingOnly = filter.createEl('input', {type: 'checkbox'});
+    const pendingCount = this.records.filter(record => !record.description).length;
+    filter.createSpan({text: `Pending descriptions only (${pendingCount})`});
     const count = this.contentEl.createEl('p', {attr: {'aria-live': 'polite'}});
     const results = this.contentEl.createDiv({cls: 'image-ledger-picker'});
-    const records = [...this.records].sort((left, right) => Date.parse(right.importedAt) - Date.parse(left.importedAt));
+    const created = (record: ManagedImage) => {
+      const file = this.app.vault.getAbstractFileByPath(record.imagePath);
+      return file instanceof TFile ? file.stat?.ctime ?? 0 : 0;
+    };
+    const records = [...this.records].sort((left, right) => created(right) - created(left));
     const render = () => {
       results.empty();
       const search = input.value.toLocaleLowerCase();
       const matches = records.filter(record =>
-        `${record.description} ${record.id} ${record.sourceNotes.join(' ')}`.toLocaleLowerCase().includes(search));
+        (!pendingOnly.checked || !record.description)
+        && `${record.description} ${record.id} ${record.imagePath}`.toLocaleLowerCase().includes(search));
       count.setText(`Showing ${Math.min(matches.length, 100)} of ${matches.length}`);
       for (const record of matches.slice(0, 100)) {
-        const button = results.createEl('button');
+        const row = results.createDiv({cls: 'image-ledger-picker-row'});
+        const button = row.createEl('button');
         const image = this.app.vault.getAbstractFileByPath(record.imagePath);
         if (image instanceof TFile) {
           button.createEl('img', {attr: {src: this.app.vault.getResourcePath(image), alt: '', loading: 'lazy'}});
         }
         const label = button.createSpan();
-        label.createSpan({text: record.description, cls: 'image-ledger-picker-description'});
-        label.createEl('small', {text: `${record.sourceNotes.join(', ') || 'No source note'} · ${record.id}`});
+        label.createSpan({text: record.description || 'Description pending', cls: 'image-ledger-picker-description'});
+        label.createEl('small', {text: record.imagePath});
         button.addEventListener('click', () => {
           this.close();
           this.choose(record);
         });
+        if (this.edit) {
+          const edit = row.createEl('button', {
+            text: 'Edit description',
+            attr: {'aria-label': `Edit description for ${record.imagePath}`},
+          });
+          edit.addEventListener('click', () => {
+            this.close();
+            this.edit?.(record);
+          });
+        }
       }
     };
     input.addEventListener('input', render);
+    pendingOnly.addEventListener('change', render);
     render();
     input.focus();
   }
@@ -115,9 +140,8 @@ export class DeleteImageModal extends Modal {
 
   constructor(
     app: App,
-    private record: ImageRecord,
+    private record: ManagedImage,
     private preview: DeletePreview,
-    private assets: DeletionAssets,
     private resolve: (confirmed: boolean) => void,
   ) {
     super(app);
@@ -133,26 +157,16 @@ export class DeleteImageModal extends Modal {
       });
     }
     this.contentEl.createEl('p', {text: this.record.description});
-    this.contentEl.createEl('p', {text: 'Remove these embeds and generated Image details links. Other note text stays unchanged.'});
+    this.contentEl.createEl('p', {text: 'Remove these image embeds and move the image to recoverable Trash.'});
     const notes = this.contentEl.createEl('ul');
     for (const [path, plan] of Object.entries(this.preview.notes)) {
-      const count = managedImageEmbeds(plan.before, path, [this.record], true).length;
-      notes.createEl('li', {text: `${path}: ${count} embeds, ${plan.beforeRanges.length - count} details links`});
+      const count = plan.beforeRanges.length;
+      notes.createEl('li', {text: `${path}: ${count} embeds`});
     }
     if (!Object.keys(this.preview.notes).length) notes.createEl('li', {text: 'No supported references found.'});
     this.contentEl.createEl('p', {text: 'Delete these managed files using Obsidian’s Deleted files setting:'});
     const files = this.contentEl.createEl('ul');
-    for (const path of [this.record.imagePath, this.record.sidecarPath, this.record.recordPath]) {
-      files.createEl('li', {text: this.assets.files.includes(path) ? path : `${path} (already missing)`});
-    }
-    if (this.assets.captures.length) {
-      this.contentEl.createEl('p', {text: `Cancel ${this.assets.captures.length} staged captures and remove their temporary copies:`});
-      const staged = this.contentEl.createEl('ul');
-      for (const capture of this.assets.captures) {
-        staged.createEl('li', {text: `.image-ledger/staging/${capture.id}.${capture.format} and ${capture.id}.json`});
-      }
-    }
-    this.contentEl.createEl('p', {text: 'Original source files, Git history, backups and external copies are excluded. Restored files will not rejoin the image library.'});
+    files.createEl('li', {text: this.record.imagePath});
     for (const reason of this.preview.blocked) {
       this.contentEl.createEl('p', {text: `Resolve before deleting: ${reason}`, cls: 'image-ledger-validation'});
     }
@@ -187,7 +201,7 @@ export class MediaSettings extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', {text: 'Image Ledger'});
     containerEl.createEl('p', {
-      text: 'JPEG/PNG files stay unchanged. Images and records use the selected storage layout. No upload or backup runs in this version.',
+      text: 'Descriptions are embedded in JPEG/PNG metadata. Normalized SHA-256 filenames stay stable when descriptions change.',
     });
     new Setting(containerEl)
       .setName('Handle image paste')
@@ -206,21 +220,13 @@ export class MediaSettings extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
     new Setting(containerEl)
-      .setName('Link image details in notes')
-      .setDesc('Add a small link to the image record underneath each new image.')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.showRecordLink)
+      .setName('ExifTool executable')
+      .setDesc('Requires ExifTool 13.58 or 13.63. The default searches PATH and standard Homebrew locations. For a different install, enter its absolute path and reload the plugin.')
+      .addText(text => text
+        .setPlaceholder('/absolute/path/to/exiftool')
+        .setValue(this.plugin.settings.exiftoolPath)
         .onChange(async value => {
-          this.plugin.settings.showRecordLink = value;
-          await this.plugin.saveSettings();
-        }));
-    new Setting(containerEl)
-      .setName('Always keep alt text in sync with the description')
-      .setDesc('Overwrite customized alt text on generated-form image embeds during description saves. Off by default.')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.syncCustomAlt)
-        .onChange(async value => {
-          this.plugin.settings.syncCustomAlt = value;
+          this.plugin.settings.exiftoolPath = value.trim() || 'exiftool';
           await this.plugin.saveSettings();
         }));
     new Setting(containerEl)
@@ -235,47 +241,8 @@ export class MediaSettings extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
     containerEl.createEl('p', {
-      text: 'Use Image Ledger: Open image library to browse images in Bases. Disable another image-paste uploader before using this plugin.',
+      text: 'Use Image Ledger: Open image library to find images with pending descriptions and edit them.',
     });
-  }
-}
-
-export class DescriptionSaveReview extends Modal {
-  private saving = false;
-
-  constructor(app: App, private skipped: SkippedEmbed[], private overwrite: (item: SkippedEmbed) => Promise<SkippedEmbed[]>) {
-    super(app);
-  }
-
-  onOpen(): void {
-    this.titleEl.setText('Skipped image descriptions');
-    this.render();
-  }
-
-  private render(): void {
-    this.contentEl.empty();
-    if (!this.skipped.length) this.contentEl.createEl('p', {text: 'No skipped embeds remain.'});
-    for (const item of this.skipped) {
-      const row = new Setting(this.contentEl)
-        .setName(item.path)
-        .setDesc(`${item.reason}${item.text ? ': ' + item.text : ''}`);
-      if (item.from !== undefined && item.text !== undefined) {
-        row.addButton(button => button.setButtonText('Overwrite this embed').onClick(async () => {
-          if (this.saving) return;
-          this.saving = true;
-          button.setDisabled(true);
-          try {
-            this.skipped = await this.overwrite(item);
-            this.render();
-          } catch (error) {
-            row.setDesc(String(error));
-            button.setDisabled(false);
-          } finally {
-            this.saving = false;
-          }
-        }));
-      }
-    }
   }
 }
 
@@ -285,11 +252,11 @@ export class ImageAuditModal extends Modal {
   }
 
   onOpen(): void {
-    this.titleEl.setText('Image record check');
+    this.titleEl.setText('Managed image check');
     this.contentEl.addClass('image-ledger-audit');
     const report = this.report;
     this.contentEl.createEl('p', {
-      text: `${report.records} image records · ${report.pending} descriptions pending · ${report.missing} missing files · ${report.interrupted} interrupted captures`,
+      text: `${report.images} managed images · ${report.pending} descriptions pending · ${report.interrupted} interrupted captures`,
     });
     this.contentEl.createEl('p', {text: 'This check does not change files or attempt recovery.'});
     if (!report.issues.length) {

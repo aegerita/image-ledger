@@ -18,9 +18,12 @@ async function temporaryDirectory(): Promise<string> {
 
 async function guardedFixture() {
   const parent = await temporaryDirectory();
-  const vault = await createTestVault(path.join(parent, 'generated vault'));
+  const tool = path.join(parent, 'exiftool');
+  await writeFile(tool, '# Synthetic executable identity for read-only guard tests.\n');
+  const exiftool = {path: await realpath(tool), sha256: sha256(await readFile(tool))};
+  const vault = await realpath(await createTestVault(path.join(parent, 'generated vault'), exiftool.path));
   const artifacts = Object.fromEntries(await Promise.all(['main.js', 'manifest.json', 'styles.css'].map(async name => [name, sha256(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', name)))])));
-  const config = { vault, runId: randomUUID(), phase: 'main', deadline: Date.now() + 10000, artifacts };
+  const config = { vault, runId: randomUUID(), phase: 'main', deadline: Date.now() + 10000, artifacts, exiftool };
   const app = { vault: { adapter: { getBasePath: () => vault } } };
   return { parent, vault, app, config };
 }
@@ -32,6 +35,11 @@ test('CLI preserves spaced paths and code as individual arguments, with vault be
   assert.equal(invocation.command, '/usr/bin/script');
   assert.deepEqual(invocation.args, ['-q', '/dev/null', binary, 'vault=Vault with spaces', 'eval', `code=${code}`]);
   assert.deepEqual(cliInvocation(binary, undefined, code).args, ['-q', '/dev/null', binary, 'eval', `code=${code}`]);
+  const standalone = path.join(path.dirname(binary), 'obsidian-cli');
+  assert.deepEqual(cliInvocation(standalone, '/private/tmp/Vault with spaces', code), {
+    command: standalone,
+    args: ['vault=Vault with spaces', 'eval', `code=${code}`],
+  });
 });
 
 test('stale completed receipts cannot pass a different run or phase', async () => {
@@ -110,7 +118,7 @@ for (const storage of ['', '2042']) test(`final validation discovers ${storage |
         await writeFile(path.join(f.vault, folder, 'images', id + '.png'), 'synthetic payload');
       }
     }
-    await assert.rejects(validateFinalVault(f.vault, f.config.artifacts), new RegExp(`Invalid record: ${storage ? storage + '/' : ''}image-records/`));
+    await assert.rejects(validateFinalVault(f.vault, f.config.artifacts, f.config.exiftool.path), /Record, sidecar, or Bases file created/);
   } finally {await rm(f.parent, {recursive: true, force: true});}
 });
 
@@ -202,13 +210,13 @@ test('trust refuses extra enabled or installed plugins before lowering restricte
   const fixture = await guardedFixture();
   try {
     const vault = await realpath(fixture.vault);
-    await verifyTrustTarget(vault, fixture.config.artifacts);
+    await verifyTrustTarget(vault, fixture.config.artifacts, fixture.config.exiftool);
     const enabled = path.join(vault, '.obsidian/community-plugins.json');
     await writeFile(enabled, JSON.stringify(['image-ledger', 'unreviewed-plugin']));
-    await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts), /unknown plugin/);
+    await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts, fixture.config.exiftool), /unknown plugin/);
     await writeFile(enabled, JSON.stringify(['image-ledger']));
     await mkdir(path.join(vault, '.obsidian/plugins/unreviewed-plugin'));
-    await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts), /another plugin/);
+    await assert.rejects(verifyTrustTarget(vault, fixture.config.artifacts, fixture.config.exiftool), /another plugin/);
   } finally {await rm(fixture.parent, {recursive: true, force: true});}
 });
 
@@ -225,4 +233,20 @@ test('vault selection waits only for the exact startup command-registration erro
   await assert.rejects(waitForSelectedVault(vault, Date.now() + 2000, async () => {
     throw Object.assign(new Error('CLI eval error: Error: unknown command failure'), {code: 'CLI_EVAL_ERROR'});
   }), /unknown command failure/);
+});
+
+test('trust refuses changed ExifTool bytes and unexpected generated plugin settings', async () => {
+  const fixture = await guardedFixture();
+  try {
+    await verifyTrustTarget(fixture.vault, fixture.config.artifacts, fixture.config.exiftool);
+    const data = path.join(fixture.vault, '.obsidian/plugins/image-ledger/data.json');
+    await writeFile(data, JSON.stringify({exiftoolPath: '/different/exiftool'}));
+    await assert.rejects(verifyTrustTarget(fixture.vault, fixture.config.artifacts, fixture.config.exiftool), /Unexpected generated plugin settings/);
+    await writeFile(data, JSON.stringify({exiftoolPath: fixture.config.exiftool.path}));
+    await writeFile(fixture.config.exiftool.path, 'changed executable');
+    await assert.rejects(verifyTrustTarget(fixture.vault, fixture.config.artifacts, fixture.config.exiftool), /ExifTool executable changed/);
+    assert.throws(() => host.verifyVault(fixture.app, fixture.config), /ExifTool executable changed/);
+  } finally {
+    await rm(fixture.parent, {recursive: true, force: true});
+  }
 });

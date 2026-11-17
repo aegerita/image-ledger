@@ -27,6 +27,8 @@ Update the three plugin files together. Existing vaults from the earlier record-
 
 Images go in `images/`, or in `<year>/images/` if you choose a year-based layout. Their names use a 64-character normalized SHA-256 hash. Imports with matching identity reuse the existing image. An existing description wins when you reimport another copy. Description changes keep the filename and all note links.
 
+Image Ledger caches captions in `.image-ledger/catalog-cache.json` for faster startup and browsing. You can remove that file while the plugin is closed to rebuild it on startup. Captions live in the image files.
+
 Copy the image files or the entire image folder to export them. The images contain their descriptions and received photo metadata. The filename is a deduplication ID, so use a separate file checksum to verify a transfer. The hash stays stable through description edits and across the supported ExifTool versions. Recompression or other metadata edits can produce a different ID.
 
 The plugin changes the saved copy's bytes when embedding a description and verifies that the encoded image, EXIF and color profile survive. Source files remain intact. Clipboard conversion can remove GPS or capture dates before Obsidian receives the file. Import the original JPEG or PNG when that metadata matters. A file copy carries embedded photo dates. Filesystem timestamps depend on how you copy it.
@@ -35,7 +37,7 @@ The plugin changes the saved copy's bytes when embedding a description and verif
 
 **Delete image everywhere...** previews the image and affected notes. It removes supported Markdown embeds and sends the file to Obsidian's recoverable Trash. Set **Deleted files** to system Trash or the vault `.trash` folder. Resolve blockers such as wiki embeds, ordinary links, or unsaved conflicting edits before confirming. Removing an embed by hand leaves the image file in place.
 
-**Recover interrupted image captures** resumes from the original source note. **Check managed images** lists pending descriptions, unreadable images and unfinished operations. An interrupted deletion resumes when the plugin reloads. If a note or file changed, the receipt stays available for inspection.
+**Recover interrupted image captures** resumes from the original source note. **Check managed images** reads and checksums the image files and lists pending descriptions, unreadable images and unfinished operations. An interrupted deletion resumes when the plugin reloads. If a note or file changed, the receipt stays available for inspection.
 
 Image Ledger runs locally. Exported files can include GPS or other metadata already present in the image. Any vault sync or backup policy is managed by your own service.
 

@@ -127,6 +127,12 @@ export class ImageLibrary {
         to: editor.posToOffset(editor.getCursor('to')),
       } : undefined;
       await this.ready();
+      if (imageId) {
+        const known = this.store.allRecords().find(image => image.id === imageId);
+        if (known && this.app.vault.getAbstractFileByPath(known.imagePath) instanceof TFile) {
+          return await action(known);
+        }
+      }
       await this.store.refresh();
       const images = this.store.allRecords();
       if (imageId) {

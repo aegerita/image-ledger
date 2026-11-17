@@ -97,6 +97,40 @@ test('description command uses its captured cursor target and a freshly loaded i
   assert.equal(f.text.get(f.note.path), `Before\n![Updated description](${f.image.imagePath})\nAfter`);
 });
 
+test('editing a known image loads its current description without refreshing the catalog', async () => {
+  const f = fixture();
+  await f.library.ready();
+  f.store.refresh = async () => { throw new Error('Unexpected catalog refresh'); };
+  const load = f.store.load;
+  f.store.load = async path => ({...await load(path), description: 'Current embedded description'});
+
+  await f.library.editDescription(async image => {
+    assert.equal(image.description, 'Current embedded description');
+    assert.equal(image.checksum, 'verified-checksum');
+    return 'Edited caption';
+  }, f.image.id);
+
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.calls, [{
+    image: {...f.image, description: 'Current embedded description', checksum: 'verified-checksum'},
+    description: 'Edited caption',
+  }]);
+});
+
+test('editing a known image refreshes the catalog when its indexed path moved', async () => {
+  const f = fixture();
+  await f.library.ready();
+  const moved = {...f.image, imagePath: `2027/${f.image.imagePath}`};
+  f.files.delete(f.image.imagePath);
+  f.files.set(moved.imagePath, Object.assign(new host.TFile(), {path: moved.imagePath}));
+  f.store.refresh = async () => { f.catalog([moved, f.other]); };
+
+  await f.library.editDescription(async () => 'Edited caption', f.image.id);
+
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.calls, [{image: {...moved, checksum: 'verified-checksum'}, description: 'Edited caption'}]);
+});
+
 test('caption changes reach copied embeds and keep titles, custom alt text, examples, and reference labels', async () => {
   const f = fixture();
   const copy = Object.assign(new host.TFile(), {path: 'Other/Copy.md'});

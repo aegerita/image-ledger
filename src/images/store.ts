@@ -11,6 +11,7 @@ import { operationPath, parseOperation, type DeletionNotes } from './operations'
 export interface VaultIO {
   checkTrash(): void;
   exists(path: string): Promise<boolean>;
+  stat(path: string): Promise<string | undefined>;
   read(path: string): Promise<string>;
   write(path: string, text: string): Promise<void>;
   readBinary(path: string): Promise<Uint8Array>;
@@ -52,6 +53,9 @@ export interface ImageAudit {
 }
 
 const STATE_DIR = '.image-ledger/staging';
+export const CATALOG_CACHE_PATH = '.image-ledger/catalog-cache.json';
+const CATALOG_CACHE_VERSION = 1;
+type CaptionEntry = {stamp: string; checksum: string; description: string};
 type RemoveEmbeds = (image: ManagedImage, notes: DeletionNotes) => Promise<void>;
 
 export function storageFolder(sourcePath: string, importedAt: Date, layout: StorageLayout): string {
@@ -65,7 +69,8 @@ export function storageFolder(sourcePath: string, importedAt: Date, layout: Stor
 
 export class MediaStore {
   private records = new Map<string, ManagedImage>();
-  private issues: ImageAudit['issues'] = [];
+  private captions?: Map<string, CaptionEntry>;
+  private cacheDirty = false;
   private serial: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -79,34 +84,80 @@ export class MediaStore {
   }
 
   refresh(): Promise<void> {
-    return this.exclusive(() => this.refreshCatalog());
+    return this.exclusive(async () => {
+      await this.refreshCatalog();
+    });
   }
 
-  private async refreshCatalog(): Promise<void> {
-    // shortcut: rescan images until a persistent caption cache can be invalidated safely.
-    // https://linear.app/obsidian-image-backup-plugin/issue/OBS-61/avoid-rereading-every-image-when-refreshing-the-catalog
+  private async readCaptionCache(): Promise<Map<string, CaptionEntry>> {
+    try {
+      if (await this.io.stat(CATALOG_CACHE_PATH) === undefined) return new Map();
+      const {version, entries} = JSON.parse(await this.io.read(CATALOG_CACHE_PATH));
+      if (version === CATALOG_CACHE_VERSION && entries && typeof entries === 'object' && !Array.isArray(entries)) {
+        const captions = new Map<string, CaptionEntry>();
+        for (const [path, value] of Object.entries(entries)) {
+          const entry = value as Partial<CaptionEntry> | null;
+          if (isManagedPath(path) && typeof entry?.stamp === 'string'
+            && isImageId(entry.checksum) && typeof entry.description === 'string') {
+            captions.set(path, {stamp: entry.stamp, checksum: entry.checksum, description: entry.description});
+          }
+        }
+        return captions;
+      }
+    } catch {
+      // A missing or unreadable cache can always be rebuilt from the images.
+    }
+    return new Map();
+  }
+
+  private async refreshCatalog(verify = false): Promise<ImageAudit['issues']> {
+    const captions = this.captions ??= await this.readCaptionCache();
     const paths = new Set(await this.io.mediaPaths());
     for (const image of this.records.values()) paths.add(image.imagePath);
     const next = new Map<string, ManagedImage>();
+    const nextCaptions = new Map<string, CaptionEntry>();
     const issues: ImageAudit['issues'] = [];
     for (const imagePath of paths) {
       if (!isManagedPath(imagePath)) continue;
       try {
-        if (!await this.io.exists(imagePath)) continue;
+        const stamp = await this.io.stat(imagePath);
+        if (stamp === undefined) continue;
         const id = posix.parse(imagePath).name;
-        const bytes = await this.io.readBinary(imagePath);
-        const checksum = sha256(bytes);
-        const cached = this.records.get(id);
         if (next.has(id)) throw new Error('Multiple image paths use the same normalized ID. Resolve the duplicate files.');
-        const description = cached?.checksum === checksum
-          ? cached.description : await this.codec.readDescription(bytes);
-        next.set(id, {id, imagePath, description, checksum});
+        const cached = captions.get(imagePath);
+        let entry: CaptionEntry;
+        if (!verify && cached?.stamp === stamp) {
+          entry = cached;
+        } else {
+          const bytes = await this.io.readBinary(imagePath);
+          const checksum = sha256(bytes);
+          const description = cached?.checksum === checksum ? cached.description : await this.codec.readDescription(bytes);
+          if (await this.io.stat(imagePath) !== stamp) throw new Error('The image changed while its description was being read.');
+          entry = {stamp, checksum, description};
+          if (cached?.stamp !== stamp || cached.checksum !== checksum) {
+            this.cacheDirty = true;
+          }
+        }
+        nextCaptions.set(imagePath, entry);
+        next.set(id, {id, imagePath, description: entry.description});
       } catch (error) {
         issues.push({path: imagePath, reason: String(error)});
       }
     }
     this.records = next;
-    this.issues = issues;
+    this.captions = nextCaptions;
+    if (this.cacheDirty || nextCaptions.size !== captions.size) {
+      try {
+        await this.io.write(CATALOG_CACHE_PATH, JSON.stringify({
+          version: CATALOG_CACHE_VERSION,
+          entries: Object.fromEntries(nextCaptions),
+        }));
+        this.cacheDirty = false;
+      } catch {
+        this.cacheDirty = true;
+      }
+    }
+    return issues;
   }
 
   async load(imagePath: string): Promise<ManagedImage> {
@@ -339,13 +390,14 @@ export class MediaStore {
     this.records.delete(image.id);
   }
 
-  async audit(): Promise<ImageAudit> {
-    await this.refresh();
-    const issues = [...this.issues];
-    const captures = await this.pendingCaptures((path, reason) => issues.push({path, reason}));
-    for (const pending of captures) issues.push({path: pending.transactionPath, reason: 'Interrupted capture. Run Recover interrupted image captures.'});
-    for (const path of await this.io.operationPaths()) issues.push({path, reason: 'Unfinished deletion. Keep this receipt for recovery.'});
-    return {images: this.records.size, pending: this.allRecords().filter(image => !image.description).length, interrupted: captures.length, issues};
+  audit(): Promise<ImageAudit> {
+    return this.exclusive(async () => {
+      const issues = await this.refreshCatalog(true);
+      const captures = await this.pendingCaptures((path, reason) => issues.push({path, reason}));
+      for (const pending of captures) issues.push({path: pending.transactionPath, reason: 'Interrupted capture. Run Recover interrupted image captures.'});
+      for (const path of await this.io.operationPaths()) issues.push({path, reason: 'Unfinished deletion. Keep this receipt for recovery.'});
+      return {images: this.records.size, pending: this.allRecords().filter(image => !image.description).length, interrupted: captures.length, issues};
+    });
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {

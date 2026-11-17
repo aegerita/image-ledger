@@ -3,7 +3,7 @@ import { ViewPlugin, type EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { randomUUID } from 'node:crypto';
 import { addAnchor, insertionAnchors, removeAnchor } from './anchors';
-import { assertVaultPath, markdownEmbed } from '../images/markdown';
+import { assertVaultPath, markdownAltText, markdownEmbed } from '../images/markdown';
 import { deletionBlockers, deletionProjection, managedImageEmbeds } from '../images/embeds';
 import type { ManagedImage } from '../images/model';
 import type { DeletionNotes, NoteProjection } from '../images/operations';
@@ -83,6 +83,53 @@ export class NoteImages {
     return views.find(view => view.file?.path === sourcePath);
   }
 
+  async syncDescription(previous: ManagedImage, next: ManagedImage): Promise<{updated: number; skipped: number; conflicts: string[]}> {
+    const report = {updated: 0, skipped: 0, conflicts: [] as string[]};
+    const oldAlt = markdownAltText(previous.description);
+    const newAlt = markdownAltText(next.description);
+    if (oldAlt === newAlt) return report;
+
+    // Read notes rather than relying on the link index, which can lag behind copied embeds.
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const sourcePath = file.path;
+      try {
+        const before = await this.app.vault.read(file);
+        const views = this.app.workspace.getLeavesOfType('markdown')
+          .map(leaf => leaf.view as MarkdownView).filter(view => view.file === file);
+        const beforeRanges = [];
+        for (const {alt} of managedImageEmbeds(before, sourcePath, [previous], true)) {
+          const text = alt && before.slice(alt.from, alt.to);
+          if (alt && text === oldAlt) {
+            beforeRanges.push(alt);
+          } else if (text !== newAlt) {
+            report.skipped++;
+          }
+        }
+        if (views.some(view => {
+          const text = view.editor.getValue();
+          return text !== before && (beforeRanges.length > 0 || managedImageEmbeds(text, sourcePath, [previous]).length > 0);
+        })) {
+          report.conflicts.push(sourcePath);
+          continue;
+        }
+        if (!beforeRanges.length) continue;
+        assertVaultPath(sourcePath);
+        let cursor = 0;
+        let after = '';
+        for (const range of beforeRanges) {
+          after += before.slice(cursor, range.from) + newAlt;
+          cursor = range.to;
+        }
+        after += before.slice(cursor);
+        await this.applyNoteProjection(sourcePath, {before, after, beforeRanges}, newAlt);
+        report.updated += beforeRanges.length;
+      } catch {
+        report.conflicts.push(sourcePath);
+      }
+    }
+    return report;
+  }
+
   async deletionPreview(record: ManagedImage): Promise<DeletePreview> {
     const preview: DeletePreview = {notes: Object.create(null), blocked: []};
     // Scan saved Markdown and live editors; the link index can lag behind a copied embed.
@@ -144,13 +191,14 @@ export class NoteImages {
     }
   }
 
-  private async applyNoteProjection(sourcePath: string, plan: NoteProjection): Promise<void> {
+  private async applyNoteProjection(sourcePath: string, plan: NoteProjection, replacement = ''): Promise<void> {
     const file = this.sourceNote(sourcePath);
     if (!file) throw noteProjectionConflict(sourcePath);
     const view = this.noteView(sourcePath);
     if (!view) {
       await this.app.vault.process(file, content => {
-        if (content !== plan.before && content !== plan.after) throw noteProjectionConflict(sourcePath);
+        if (this.sourceNote(sourcePath) !== file || this.noteView(sourcePath)
+          || (content !== plan.before && content !== plan.after)) throw noteProjectionConflict(sourcePath);
         return plan.after;
       });
       return;
@@ -165,7 +213,7 @@ export class NoteImages {
       const changes = plan.beforeRanges.map(range => ({
         from: view.editor.offsetToPos(range.from),
         to: view.editor.offsetToPos(range.to),
-        text: '',
+        text: replacement,
       }));
       if (changes.length) view.editor.transaction({changes});
     }

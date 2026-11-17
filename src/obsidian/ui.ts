@@ -73,7 +73,8 @@ export class DescriptionModal extends Modal {
 }
 
 export class ImagePicker extends Modal {
-  constructor(app: App, private records: ManagedImage[], private choose: (record: ManagedImage) => void) {
+  constructor(app: App, private records: ManagedImage[], private choose: (record: ManagedImage) => void,
+    private edit?: (record: ManagedImage) => void) {
     super(app);
   }
 
@@ -83,6 +84,10 @@ export class ImagePicker extends Modal {
       type: 'search',
       attr: {placeholder: 'Search descriptions, image IDs or paths', 'aria-label': 'Search images'},
     });
+    const filter = this.contentEl.createEl('label', {cls: 'image-ledger-picker-filter'});
+    const pendingOnly = filter.createEl('input', {type: 'checkbox'});
+    const pendingCount = this.records.filter(record => !record.description).length;
+    filter.createSpan({text: `Pending descriptions only (${pendingCount})`});
     const count = this.contentEl.createEl('p', {attr: {'aria-live': 'polite'}});
     const results = this.contentEl.createDiv({cls: 'image-ledger-picker'});
     const created = (record: ManagedImage) => {
@@ -94,10 +99,12 @@ export class ImagePicker extends Modal {
       results.empty();
       const search = input.value.toLocaleLowerCase();
       const matches = records.filter(record =>
-        `${record.description} ${record.id} ${record.imagePath}`.toLocaleLowerCase().includes(search));
+        (!pendingOnly.checked || !record.description)
+        && `${record.description} ${record.id} ${record.imagePath}`.toLocaleLowerCase().includes(search));
       count.setText(`Showing ${Math.min(matches.length, 100)} of ${matches.length}`);
       for (const record of matches.slice(0, 100)) {
-        const button = results.createEl('button');
+        const row = results.createDiv({cls: 'image-ledger-picker-row'});
+        const button = row.createEl('button');
         const image = this.app.vault.getAbstractFileByPath(record.imagePath);
         if (image instanceof TFile) {
           button.createEl('img', {attr: {src: this.app.vault.getResourcePath(image), alt: '', loading: 'lazy'}});
@@ -109,9 +116,20 @@ export class ImagePicker extends Modal {
           this.close();
           this.choose(record);
         });
+        if (this.edit) {
+          const edit = row.createEl('button', {
+            text: 'Edit description',
+            attr: {'aria-label': `Edit description for ${record.imagePath}`},
+          });
+          edit.addEventListener('click', () => {
+            this.close();
+            this.edit?.(record);
+          });
+        }
       }
     };
     input.addEventListener('input', render);
+    pendingOnly.addEventListener('change', render);
     render();
     input.focus();
   }
@@ -203,7 +221,7 @@ export class MediaSettings extends PluginSettingTab {
         }));
     new Setting(containerEl)
       .setName('ExifTool executable')
-      .setDesc('Requires ExifTool 13.58 or 13.63. Enter its absolute path, or exiftool if available on PATH. Reload the plugin after changing it.')
+      .setDesc('Requires ExifTool 13.58 or 13.63. The default searches PATH and standard Homebrew locations. For a different install, enter its absolute path and reload the plugin.')
       .addText(text => text
         .setPlaceholder('/absolute/path/to/exiftool')
         .setValue(this.plugin.settings.exiftoolPath)
@@ -223,7 +241,7 @@ export class MediaSettings extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
     containerEl.createEl('p', {
-      text: 'Use Image Ledger: Open image library to browse image files. New embeds keep their insertion-time alt text when a description changes.',
+      text: 'Use Image Ledger: Open image library to find images with pending descriptions and edit them.',
     });
   }
 }

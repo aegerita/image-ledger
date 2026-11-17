@@ -7,12 +7,17 @@ import type { ManagedImage } from '../src/images/model';
 
 function captures(f: ReturnType<typeof storageFixture>, describe: () => Promise<string | null> = async () => 'Caption') {
   const errors: unknown[] = [];
+  const synced: [string, string][] = [];
   let recovered: ManagedImage | undefined;
   const workflow = new CaptureWorkflow(f.store, {
     sourceNote: () => ({} as never),
     recover: async image => { recovered = image; },
+    syncDescription: async (previous, next) => {
+      synced.push([previous.description, next.description]);
+      return {updated: 0, skipped: 0, conflicts: []};
+    },
   }, {describe, notify: () => {}, report: error => { errors.push(error); }});
-  return {workflow, errors, recovered: () => recovered};
+  return {workflow, errors, synced, recovered: () => recovered};
 }
 
 const file = () => new File([JPEG], 'synthetic.jpg', {type: 'image/jpeg'});
@@ -53,7 +58,11 @@ test('missing recovery note preserves staged data and image', async () => {
   const f = storageFixture();
   await f.store.stage({bytes: JPEG}, 'Gone.md');
   const errors: unknown[] = [];
-  const workflow = new CaptureWorkflow(f.store, {sourceNote: () => undefined, recover: async () => {}}, {
+  const workflow = new CaptureWorkflow(f.store, {
+    sourceNote: () => undefined,
+    recover: async () => {},
+    syncDescription: async () => assert.fail('Missing note must not be updated'),
+  }, {
     describe: async () => 'Caption', notify: () => {}, report: error => { errors.push(error); },
   });
   workflow.recover();
@@ -65,7 +74,7 @@ test('missing recovery note preserves staged data and image', async () => {
 test('a description added by a later duplicate keeps the first insertion position', async () => {
   const f = storageFixture();
   const captions = [null, 'PNG caption', 'JPEG caption'];
-  const {workflow, errors} = captures(f, async () => captions.shift() ?? null);
+  const {workflow, errors, synced} = captures(f, async () => captions.shift() ?? null);
   const embedded: ManagedImage[] = [];
   const target = {
     path: 'Note.md',
@@ -77,4 +86,5 @@ test('a description added by a later duplicate keeps the first insertion positio
   await workflow.enqueue(async () => {});
   assert.deepEqual(errors, []);
   assert.deepEqual(embedded.map(image => image.description), ['JPEG caption', 'PNG caption']);
+  assert.deepEqual(synced, [['', 'JPEG caption']]);
 });

@@ -27,7 +27,7 @@ function fixture() {
   const app = {
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path),
-      getMarkdownFiles: () => [note],
+      getMarkdownFiles: () => [...files.values()].filter(file => file.extension === 'md'),
       read: async (file: HostFile) => text.get(file.path)!,
       process: async (file: HostFile, update: (value: string) => string) => text.set(file.path, update(text.get(file.path)!)),
     },
@@ -94,7 +94,35 @@ test('description command uses its captured cursor target and a freshly loaded i
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].image.id, f.image.id);
   assert.equal(f.calls[0].description, 'Updated description');
-  assert.match(f.text.get(f.note.path)!, /Original description/);
+  assert.equal(f.text.get(f.note.path), `Before\n![Updated description](${f.image.imagePath})\nAfter`);
+});
+
+test('caption changes reach copied embeds and keep titles, custom alt text, examples, and reference labels', async () => {
+  const f = fixture();
+  const copy = Object.assign(new host.TFile(), {path: 'Other/Copy.md'});
+  f.files.set(copy.path, copy);
+  const original = `![Original description](<../${f.image.imagePath}> "Example title")`;
+  const custom = `![Hand-written [label]](../${f.image.imagePath})`;
+  const reference = `![Original description][photo]\n\n[photo]: ../${f.image.imagePath}`;
+  const untouched = `${custom}\n\n${reference}\n\n\`\`\`md\n${original}\n\`\`\``;
+  f.text.set(copy.path, `${original}\n\n${untouched}`);
+  const description = 'New [description]';
+  const result = await f.notes.syncDescription(f.image, {...f.image, description});
+  assert.deepEqual(result, {updated: 2, skipped: 2, conflicts: []});
+  assert.equal(f.text.get(copy.path), `![New \\[description\\]](<../${f.image.imagePath}> "Example title")\n\n${untouched}`);
+});
+
+test('caption sync reports a changed note without overwriting its concurrent edit', async () => {
+  const f = fixture();
+  const unrelated = 'Edited by the user during capture';
+  const persist = f.app.vault.process;
+  f.app.vault.process = async (file, update) => {
+    f.text.set(file.path, unrelated);
+    return persist(file, update);
+  };
+  const result = await f.notes.syncDescription(f.image, {...f.image, description: 'New caption'});
+  assert.deepEqual(result, {updated: 0, skipped: 0, conflicts: [f.note.path]});
+  assert.equal(f.text.get(f.note.path), unrelated);
 });
 
 test('canceling a description dialog leaves image metadata unsaved', async () => {

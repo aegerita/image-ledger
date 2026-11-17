@@ -93,7 +93,7 @@ export default class ImageLedgerPlugin extends Plugin {
     });
     this.addCommand({
       id: 'open-image-library', name: 'Open image library',
-      callback: () => this.library.openLibrary(),
+      callback: () => this.library.openLibrary(image => this.askDescription(image)),
     });
     this.addCommand({
       id: 'edit-image-description', name: 'Edit image description',

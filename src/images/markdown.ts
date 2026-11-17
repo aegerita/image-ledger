@@ -8,6 +8,13 @@ export function normalizeDescription(text: string): string {
   return description;
 }
 
+export function markdownAltText(description: string): string {
+  return (description.replace(/\s+/gu, ' ').trim() || 'Image')
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
+}
+
 /** Generate a normal Markdown embed that works without this plugin installed. */
 export function markdownEmbed(image: ManagedImage, sourcePath: string): string {
   assertVaultPath(sourcePath);
@@ -17,11 +24,7 @@ export function markdownEmbed(image: ManagedImage, sourcePath: string): string {
   const target = relative.split('/').map(segment => encodeURIComponent(segment)
     .replace(/\(/g, '%28')
     .replace(/\)/g, '%29')).join('/');
-  const alt = (image.description.replace(/\s+/gu, ' ').trim() || 'Image')
-    .replace(/\\/g, '\\\\')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-  return `![${alt}](${target})`;
+  return `![${markdownAltText(image.description)}](${target})`;
 }
 
 export function assertVaultPath(value: string): void {

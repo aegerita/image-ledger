@@ -155,8 +155,8 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
   assert.equal(marker.version, 1);
   const codec = createDescriptionCodec(exiftoolPath);
   for (const [name, extension, description, altText] of [
-    ['sample-exif.jpg', '.jpg', 'Edited synthetic JPEG.', ['Synthetic JPEG.', 'Synthetic JPEG.']],
-    ['sample.png', '.png', 'Recovered synthetic PNG.', ['Image', 'Recovered synthetic PNG.']],
+    ['sample-exif.jpg', '.jpg', 'Edited synthetic JPEG.', ['Edited synthetic JPEG.', 'Edited synthetic JPEG.']],
+    ['sample.png', '.png', 'Recovered synthetic PNG.', ['Recovered synthetic PNG.', 'Recovered synthetic PNG.']],
   ] as const) {
     const fixture = await readFile(path.join(vault, 'fixtures', name));
     assert.equal(sha256(fixture), marker.fixtures[name], 'Fixture changed');

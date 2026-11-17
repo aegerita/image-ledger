@@ -6,9 +6,9 @@ Requires desktop Obsidian 1.10 or later and [ExifTool](https://exiftool.org/inst
 
 ## Install
 
-1. Install or extract a supported ExifTool version in a permanent location. Run its `exiftool -ver` command to check the version. If you extract the source archive, keep its `lib` folder alongside the executable.
+1. Install or extract a supported ExifTool version in a permanent location. Run its `exiftool -ver` command to check the version. To keep package upgrades from replacing it, extract a supported version and keep its `lib` folder alongside the executable.
 2. From [GitHub Releases](https://github.com/aegerita/image-ledger/releases), copy `main.js`, `manifest.json`, and `styles.css` to `.obsidian/plugins/image-ledger/` in your vault. For a source build, see [development setup](CONTRIBUTING.md#development-setup).
-3. Enable **Image Ledger** in **Settings → Community plugins**. In **Image Ledger → ExifTool executable**, enter the absolute path to ExifTool and reload the plugin. The default `exiftool` works when Obsidian can find that command on its `PATH`.
+3. Enable **Image Ledger** in **Settings → Community plugins**. The default `exiftool` searches Obsidian’s `PATH` and standard Homebrew locations on macOS. If you installed a separate copy, set its absolute path under **Image Ledger → ExifTool executable** and reload the plugin.
 4. Disable other plugins that handle image paste or drop to avoid conflicts.
 
 Update the three plugin files together. Existing vaults from the earlier record-based format need a separate migration. Their image embeds still work, but their short IDs and UUIDs are outside the new picker and deduplication catalog. Finish any old interrupted operations with the previous build and keep the old records and sidecars until their descriptions have been migrated.
@@ -17,11 +17,11 @@ Update the three plugin files together. Existing vaults from the earlier record-
 
 1. Open a note. Paste or drop a JPEG/PNG, or run **Image Ledger: Import JPEG or PNG**.
 2. Enter a description and choose **Save description**, or choose **Describe later** to keep the image with its current metadata.
-3. Run **Open image library** to browse and open images. Search by embedded description, ID, or path.
+3. Run **Open image library** to browse images or find them by description, ID, or path. Turn on **Pending descriptions only** and choose **Edit description** next to an image to finish it later.
 
 **Known issue:** macOS can block Obsidian from reading photos copied from an iPhone through Universal Clipboard. Copy the photo again and paste promptly, or AirDrop a JPEG or PNG and import it.
 
-**Edit image description** opens the dialog for a managed image under the cursor or an open image file. Elsewhere it opens a picker, scoped to the note's images when available. It is also available in the managed image file menu and on inline embeds in Source or Live Preview. The description is stored as the default `XMP-dc:Description` value. The Markdown embed keeps the alt text it received at insertion.
+**Edit image description** opens the dialog for a managed image under the cursor or an open image file. Elsewhere it opens a picker, scoped to the note's images when available. It is also available in the managed image file menu and on inline embeds in Source or Live Preview. Saving updates the default `XMP-dc:Description` in the same image file and updates matching inline embed alt text. Image Ledger leaves custom labels and reference-style embeds alone and reports skips or conflicts.
 
 ## Storage and export
 

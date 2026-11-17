@@ -83,6 +83,8 @@ export class MediaStore {
   }
 
   private async refreshCatalog(): Promise<void> {
+    // shortcut: rescan images until a persistent caption cache can be invalidated safely.
+    // https://linear.app/obsidian-image-backup-plugin/issue/OBS-61/avoid-rereading-every-image-when-refreshing-the-catalog
     const paths = new Set(await this.io.mediaPaths());
     for (const image of this.records.values()) paths.add(image.imagePath);
     const next = new Map<string, ManagedImage>();

@@ -29,7 +29,7 @@ export class ImageLibrary {
     });
   }
 
-  async openLibrary(): Promise<void> {
+  async openLibrary(describe: (image: ManagedImage) => Promise<string | null>): Promise<void> {
     try {
       await this.ready();
       await this.store.refresh();
@@ -37,7 +37,7 @@ export class ImageLibrary {
       if (!images.length) return this.emptyNotice();
       new ImagePicker(this.app, images, image => {
         void this.app.workspace.openLinkText(image.imagePath, '', true).catch(this.report);
-      }).open();
+      }, image => void this.editDescription(describe, image.id)).open();
     } catch (error) {
       this.report(error);
     }
@@ -91,8 +91,15 @@ export class ImageLibrary {
       const image = await this.store.load(selected.imagePath);
       const description = await describe(image);
       if (description === null) return;
-      await this.store.setDescription(image, description);
-      new Notice('Image description saved in the image.');
+      const saved = await this.store.setDescription(image, description);
+      const {updated, skipped, conflicts} = await this.notes.syncDescription(image, saved);
+      let message = `Image description saved. Updated ${updated} Markdown embed(s).`;
+      if (skipped) message += ` Kept ${skipped} custom or reference label(s).`;
+      if (conflicts.length) {
+        const examples = conflicts.slice(0, 3).join(', ');
+        message += ` Could not check or update ${conflicts.length} note(s) with possible references: ${examples}.`;
+      }
+      new Notice(message, conflicts.length ? 12000 : undefined);
     }), imageId);
   }
 

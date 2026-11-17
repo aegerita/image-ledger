@@ -15,7 +15,7 @@ export class CaptureWorkflow {
 
   constructor(
     private store: MediaStore,
-    private notes: Pick<NoteImages, 'recover' | 'sourceNote'>,
+    private notes: Pick<NoteImages, 'recover' | 'sourceNote' | 'syncDescription'>,
     private ui: CaptureUI,
   ) {}
 
@@ -76,6 +76,17 @@ export class CaptureWorkflow {
     const prepared = await this.store.prepare(pending);
     const description = prepared.duplicate && prepared.record.description
       ? null : await this.ui.describe(prepared.record, prepared.preview);
-    return this.store.describe(prepared, description);
+    const image = await this.store.describe(prepared, description);
+    if (prepared.duplicate && image.description !== prepared.record.description) {
+      try {
+        const {skipped, conflicts} = await this.notes.syncDescription(prepared.record, image);
+        if (skipped || conflicts.length) {
+          this.ui.notify(`Description saved. Skipped ${skipped} embed label(s) and ${conflicts.length} note(s) that could not be updated.`);
+        }
+      } catch (error) {
+        this.ui.report(error);
+      }
+    }
+    return image;
   }
 }

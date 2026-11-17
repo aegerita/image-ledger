@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { detectImageFormat, sha256 } from './media';
 
+// shortcut: verified writer versions only until IDs no longer depend on ExifTool output.
+// https://linear.app/obsidian-image-backup-plugin/issue/OBS-62/make-managed-image-ids-independent-of-exiftool-versions
 export const SUPPORTED_EXIFTOOL_VERSIONS: readonly string[] = ['13.58', '13.63'];
 const SUPPORTED_VERSIONS_TEXT = SUPPORTED_EXIFTOOL_VERSIONS.join(' or ');
 const NORMALIZED_DESCRIPTION = 'Image Ledger fingerprint prototype';
@@ -19,10 +21,15 @@ export interface DescriptionCodec {
 }
 
 export function createDescriptionCodec(executable: string): DescriptionCodec {
+  const env = executable === 'exiftool' && process.platform === 'darwin'
+    ? {...process.env, PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(delimiter)}
+    : undefined;
+
   async function run(...args: string[]): Promise<string> {
     try {
       const result = await execute(executable, ['-config', '', ...args], {
         encoding: 'utf8',
+        env,
         maxBuffer: 32 * 1024 * 1024,
         timeout: 15_000,
         windowsHide: true,

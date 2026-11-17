@@ -212,16 +212,36 @@ module.exports = async (app, config) => {
         view.editor.setCursor(view.editor.offsetToPos(position + 3));
         assert.equal(app.commands.executeCommandById('image-ledger:edit-image-description'), true);
         submit(await modal(), 'Edited synthetic JPEG.');
-        await wait(() => image('.jpg')?.description === 'Edited synthetic JPEG.', 'embedded description edit');
+        await wait(() => image('.jpg')?.description === 'Edited synthetic JPEG.'
+          && read(source).includes(embed(jpeg, source, 'Edited synthetic JPEG.'))
+          && read(other).includes(embed(jpeg, other, 'Edited synthetic JPEG.')), 'image and note descriptions updated');
         assert.equal(image('.jpg').id, jpeg.id);
-        assert.ok(read(source).includes(embed(jpeg, source, 'Synthetic JPEG.')));
-        assert.ok(read(other).includes(embed(jpeg, other, 'Synthetic JPEG.')));
+        assert.equal(image('.jpg').imagePath, jpeg.imagePath);
       });
-      await step('Picker shows embedded descriptions and image menus target the saved file', async () => {
-        assert.equal(app.commands.executeCommandById('image-ledger:open-image-library'), true);
-        const search = await wait(() => documents().map(doc => doc.querySelector('input[aria-label="Search images"]'))
-          .find(input => input?.isConnected && input.getClientRects().length), 'image library picker');
-        const picker = search.closest('.modal');
+      await step('Library filters pending descriptions and image menus target the saved file', async () => {
+        const openPicker = async () => {
+          assert.equal(app.commands.executeCommandById('image-ledger:open-image-library'), true);
+          const search = await wait(() => documents().map(doc => doc.querySelector('input[aria-label="Search images"]'))
+            .find(input => input?.isConnected && input.getClientRects().length), 'image library picker');
+          return search.closest('.modal');
+        };
+        const pendingPicker = await openPicker();
+        const filter = pendingPicker.querySelector('.image-ledger-picker-filter');
+        assert.match(filter?.textContent ?? '', /Pending descriptions only \(1\)/);
+        const checkbox = filter.querySelector('input[type="checkbox"]');
+        assert.ok(checkbox, 'Pending filter missing');
+        checkbox.click();
+        const pendingRows = pendingPicker.querySelectorAll('.image-ledger-picker-row');
+        assert.equal(pendingRows.length, 1, 'Pending filter did not exclude described images');
+        assert.match(pendingRows[0].textContent, /Description pending/);
+        const edit = pendingRows[0].querySelector(`button[aria-label="Edit description for ${image('.png').imagePath}"]`);
+        assert.ok(edit, 'Pending image edit action missing');
+        edit.click();
+        const input = await modal();
+        assert.equal(input.value, '');
+        submit(input, null);
+
+        const picker = await openPicker();
         const button = [...picker.querySelectorAll('.image-ledger-picker button')]
           .find(item => item.textContent.includes('Edited synthetic JPEG.'));
         assert.ok(button, 'Picker missing edited embedded description');
@@ -251,7 +271,7 @@ module.exports = async (app, config) => {
         assert.ok(titles.includes('Image Ledger: Delete image everywhere...'));
         titles.length = 0;
         const view = await open(source);
-        const offset = view.editor.getValue().indexOf(embed(jpeg, source, 'Synthetic JPEG.'));
+        const offset = view.editor.getValue().indexOf(embed(jpeg, source, 'Edited synthetic JPEG.'));
         assert.ok(offset >= 0);
         view.editor.setCursor(view.editor.offsetToPos(offset + 3));
         guard();
@@ -283,7 +303,7 @@ module.exports = async (app, config) => {
         submit(await modal(), 'Recovered synthetic PNG.');
         await wait(() => saved('.png', 'Recovered synthetic PNG.', other), 'recovered capture');
         assert.equal(image('.png').id, checkpoint.pngId);
-        assert.ok(read(source).includes(embed(image('.png'), source, 'Image')));
+        assert.ok(read(source).includes(embed(image('.png'), source, 'Recovered synthetic PNG.')));
       });
       await step('Image-only library and completed recovery', async () => {
         checkImages();

@@ -5,6 +5,7 @@ import { parser } from '@lezer/markdown';
 
 export interface ManagedImageEmbed extends EmbedRange {
   record: ManagedImage;
+  alt?: EmbedRange;
 }
 
 /** Match managed destinations relative to this note, independent of their alt text. */
@@ -47,7 +48,12 @@ export function managedImageEmbeds(text: string, sourcePath: string, records: Ma
       }
       const record = target ? byPath.get(target) : undefined;
       if (record) {
-        embeds.push({from: from + node.from, to: from + node.to, record});
+        const embed: ManagedImageEmbed = {from: from + node.from, to: from + node.to, record};
+        if (url) {
+          const [open, close] = node.node.getChildren('LinkMark');
+          if (open && close) embed.alt = {from: from + open.to, to: from + close.from};
+        }
+        embeds.push(embed);
       }
       // Images nested inside alt text are labels, not independently displayed images.
       return false;

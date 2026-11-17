@@ -1,6 +1,6 @@
 export type ImageFormat = 'jpg' | 'png';
 
-/** A catalog entry rebuilt from the image, never persisted as a separate record. */
+/** Image information. The checksum is present only after reading or writing the image bytes. */
 export interface ManagedImage {
   id: string;
   imagePath: string;

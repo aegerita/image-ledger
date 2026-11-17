@@ -32,6 +32,17 @@ EXIFTOOL=/absolute/path/to/exiftool npm run test:vault -- --vault /absolute/path
 
 This creates an ignored `test-vaults/ImageLedger-*` folder with the current build, generated images and synthetic notes. Existing destinations are refused. Never install a test build in a personal vault or copy personal notes, settings, or credentials into fixtures.
 
+## Benchmark the catalog
+
+```sh
+npm run build
+EXIFTOOL=/absolute/path/to/exiftool node --import tsx scripts/benchmark-catalog.ts
+```
+
+The benchmark generates a fresh vault with 2,000 managed JPEGs. It times catalog startup, startup with a fresh plugin instance using the disk cache, the picker command, and three caption edits. The Node host double uses the real filesystem adapter code and ExifTool. It excludes picker rendering, image decoding, and note updates.
+
+Find timings and image read counts in the generated vault's `catalog-benchmark.json`. The counts cover store reads. The filesystem adapter also checks the destination and temporary file during each edit. Cold refresh reads and hashes each image. Warm startup and picker open must read zero image bytes. Caption edits verify only the selected image, and the benchmark rereads its embedded caption after timing. Allow several minutes for the cold start.
+
 ## Report results
 
 Keep the generated vault and its `.image-ledger-smoke/` JSON receipts locally, including failures. Store dated summaries in ignored `docs/smoke-tests/` or attach them to Linear. Report the vault path, result, duration, checks run, image and staging counts, and unverified native boundaries. A timeout, missing receipt, or historical result is not a current pass.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MediaStore, storageFolder } from '../src/images/store';
+import { CATALOG_CACHE_PATH, MediaStore, storageFolder } from '../src/images/store';
 import { sha256 } from '../src/images/media';
 import { deletionProjection } from '../src/images/embeds';
 import { operationPath, parseOperation, type DeletionNotes } from '../src/images/operations';
@@ -47,6 +47,142 @@ test('fresh stores rebuild their catalog from image metadata', async () => {
   await restarted.refresh();
   assert.equal(restarted.allRecords()[0].description, image.description);
   assert.equal((await restarted.load(image.imagePath)).id, image.id);
+});
+
+function cachedStorageFixture() {
+  const fixture = storageFixture();
+  const {io} = fixture;
+  const imageReads: string[] = [];
+  const captions: string[] = [];
+  const originalReadBinary = io.readBinary;
+  io.readBinary = async path => {
+    if (path.startsWith('images/') || path.includes('/images/')) imageReads.push(path);
+    return originalReadBinary(path);
+  };
+  const trackedCodec = {
+    ...codec,
+    readDescription: async (bytes: Uint8Array) => {
+      const description = await codec.readDescription(bytes);
+      captions.push(description);
+      return description;
+    },
+  };
+  return {...fixture, imageReads, captions, open: () => new MediaStore(io, DEFAULTS, trackedCodec)};
+}
+
+test('catalog refresh and restart reuse unchanged captions and read only changed image paths', async () => {
+  const f = cachedStorageFixture();
+  const photo = await importImage(f, JPEG, 'Original');
+  const diagram = await importImage(f, PNG, 'Diagram');
+  f.imageReads.length = 0;
+
+  const cold = f.open();
+  await cold.refresh();
+  assert.deepEqual(f.imageReads.splice(0), [photo.imagePath, diagram.imagePath]);
+  assert.deepEqual(f.captions.splice(0), ['Original', 'Diagram']);
+
+  await cold.refresh();
+  const warm = f.open();
+  await warm.refresh();
+  assert.deepEqual(warm.allRecords(), cold.allRecords());
+  assert.deepEqual(f.imageReads, []);
+  assert.deepEqual(f.captions, []);
+
+  const replacement = await codec.describe(JPEG, 'Replaced');
+  f.files.set(photo.imagePath, replacement);
+  await warm.refresh();
+  assert.deepEqual(f.imageReads.splice(0), [photo.imagePath]);
+  assert.deepEqual(f.captions.splice(0), ['Replaced']);
+
+  const moved = `2027/${photo.imagePath}`;
+  f.files.set(moved, replacement);
+  f.files.delete(photo.imagePath);
+  f.files.delete(diagram.imagePath);
+  await warm.rename(photo.imagePath, moved);
+  assert.deepEqual(f.imageReads.splice(0), [moved]);
+  assert.deepEqual(f.captions.splice(0), ['Replaced']);
+  assert.deepEqual(warm.allRecords().map(({imagePath, description}) => [imagePath, description]), [[moved, 'Replaced']]);
+
+  const reopened = f.open();
+  await reopened.refresh();
+  assert.deepEqual(reopened.allRecords(), warm.allRecords());
+  assert.deepEqual(f.imageReads, []);
+  assert.deepEqual(f.captions, []);
+});
+
+test('a corrupt or unsupported catalog cache is rebuilt from the images', async () => {
+  const f = cachedStorageFixture();
+  const image = await importImage(f);
+  await f.open().refresh();
+  const saved = JSON.parse(await f.io.read(CATALOG_CACHE_PATH));
+
+  const invalidCaches = ['{', 'null', JSON.stringify({...saved, version: -1}),
+    JSON.stringify({...saved, entries: {[image.imagePath]: null}})];
+  for (const invalid of invalidCaches) {
+    await f.io.write(CATALOG_CACHE_PATH, invalid);
+    f.imageReads.length = 0;
+    f.captions.length = 0;
+    const rebuilt = f.open();
+    await rebuilt.refresh();
+    assert.equal(rebuilt.allRecords()[0].description, image.description);
+    assert.deepEqual(f.imageReads, [image.imagePath]);
+    assert.deepEqual(f.captions, [image.description]);
+    assert.deepEqual(JSON.parse(await f.io.read(CATALOG_CACHE_PATH)), saved);
+  }
+});
+
+test('changing an image during caption read leaves no stale cache entry', async () => {
+  const f = cachedStorageFixture();
+  const image = await importImage(f);
+  const replacement = await codec.describe(JPEG, 'Replaced during read');
+  const readBinary = f.io.readBinary;
+  f.io.readBinary = async path => {
+    const bytes = await readBinary(path);
+    f.files.set(image.imagePath, replacement);
+    return bytes;
+  };
+  const cold = f.open();
+  await cold.refresh();
+  assert.deepEqual(cold.allRecords(), []);
+  const reopened = f.open();
+  await reopened.refresh();
+  assert.equal(reopened.allRecords()[0].description, 'Replaced during read');
+});
+
+test('matching catalog metadata cannot hide changed bytes from edits, deletion, recovery, or audit', async () => {
+  const f = cachedStorageFixture();
+  const image = await importImage(f, JPEG, 'Original');
+  const originalStat = f.io.stat;
+  const originalStamp = await originalStat(image.imagePath);
+  f.io.stat = path => path === image.imagePath ? Promise.resolve(originalStamp) : originalStat(path);
+  const store = f.open();
+  await store.refresh();
+  const verified = await store.load(image.imagePath);
+  const [cached] = store.allRecords();
+  await assert.rejects(store.setDescription(cached, 'Unverified edit'), /reload the image/i);
+  await assert.rejects(store.deleteImage(cached, {}, async () => {}), /reload the image/i);
+  const remove = async () => { throw new Error('Interrupted note removal'); };
+  await assert.rejects(store.deleteImage(verified, {}, remove), /Interrupted note removal/);
+
+  const replacement = await codec.describe(JPEG, 'Replaced');
+  assert.equal(replacement.length, f.files.get(image.imagePath)!.length);
+  f.files.set(image.imagePath, replacement);
+  await store.refresh();
+  assert.equal(store.allRecords()[0].description, 'Original');
+  await assert.rejects(store.recoverDeletions(remove), /image changed during deletion/);
+  assert(f.files.has(operationPath(image.id)));
+  await f.io.remove(operationPath(image.id));
+
+  await assert.rejects(store.setDescription(verified, 'Stale edit'), /image changed/i);
+  await assert.rejects(store.deleteImage(verified, {}, remove), /image changed during deletion preview/);
+  assert.deepEqual(f.files.get(image.imagePath), replacement);
+  assert.deepEqual(f.trashed, []);
+
+  f.imageReads.length = 0;
+  const audit = await store.audit();
+  assert.deepEqual(audit.issues, []);
+  assert.deepEqual(f.imageReads, [image.imagePath]);
+  assert.equal(store.allRecords()[0].description, 'Replaced');
 });
 
 test('Describe later keeps an empty embedded caption and existing import captions survive', async () => {

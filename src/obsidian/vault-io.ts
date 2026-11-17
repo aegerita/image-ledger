@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assertVaultPath } from '../images/markdown';
 import { sha256 } from '../images/media';
-import type { VaultIO } from '../images/store';
+import { CATALOG_CACHE_PATH, type VaultIO } from '../images/store';
 
 export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'trashFile'>): VaultIO {
   if (!(vault.adapter instanceof FileSystemAdapter)) throw new Error('Image Ledger requires a desktop filesystem vault.');
@@ -60,8 +60,9 @@ export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'tras
   };
 
   const hidden = (relative: string) => {
+    if (relative === CATALOG_CACHE_PATH) return;
     if (!/^\.image-ledger\/(?:staging\/[a-f0-9-]{36}\.(?:json|jpg|png)|operations\/[a-f0-9]{64}\.json)$/.test(relative)) {
-      throw new Error('Only current staging files and deletion receipts may be changed automatically.');
+      throw new Error('Only current staging files, deletion receipts, and the catalog cache may be changed automatically.');
     }
   };
 
@@ -88,6 +89,18 @@ export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'tras
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         return false;
+      }
+    },
+    stat: async relative => {
+      try {
+        const file = await lstat(await resolve(relative), {bigint: true});
+        if (file.isSymbolicLink()) throw new Error('Image Ledger refuses symlinked paths.');
+        if (!file.isFile()) throw new Error('The managed image path is not a regular file.');
+        // File identity and change time catch sync replacements that preserve size and mtime.
+        return [file.size, file.mtimeNs, file.ctimeNs, file.dev, file.ino].join(':');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return undefined;
       }
     },
     read: async relative => readFile(await resolve(relative), 'utf8'),

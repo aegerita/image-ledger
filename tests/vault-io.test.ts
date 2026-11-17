@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Vault } from 'obsidian';
@@ -47,6 +47,28 @@ test('caption file replacement verifies the exact original bytes and leaves no t
   assert.equal((await readdir(join(f.root, 'images'))).length, 1);
 });
 
+test('catalog stat detects an atomic replacement with the same size and modification time', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.io.stat(imagePath), undefined);
+  const mtime = new Date(12345);
+  await f.io.writeBinary(imagePath, PNG, mtime.getTime());
+  const initial = await f.io.stat(imagePath);
+  assert(initial);
+  assert.equal(await f.io.stat(imagePath), initial);
+
+  const destination = join(f.root, imagePath);
+  const replacement = join(f.root, 'replacement.png');
+  const newBytes = Buffer.from(PNG);
+  newBytes[newBytes.length - 1] ^= 1;
+  await writeFile(replacement, newBytes);
+  await utimes(replacement, mtime, mtime);
+  await rename(replacement, destination);
+  const replaced = await stat(destination);
+  assert.equal(replaced.size, PNG.length);
+  assert.equal(replaced.mtimeMs, mtime.getTime());
+  assert.notEqual(await f.io.stat(imagePath), initial);
+});
+
 test('receipts are writable and removable only in their allowed hidden paths', async t => {
   const f = await fixture(t);
   await f.io.write(staging, '{"state":"prepared"}');
@@ -67,6 +89,7 @@ test('vault writes and removals reject traversal and symlinked destinations', as
   await writeFile(join(outside, 'untouched.png'), PNG);
   await assert.rejects(f.io.writeBinary(imagePath, PNG), /symlinked/);
   await assert.rejects(f.io.readBinary('images/untouched.png'), /symlinked/);
+  await assert.rejects(f.io.stat('images/untouched.png'), /symlinked/);
   await assert.rejects(f.io.readBinary('../outside.png'), /traversal/);
   await assert.rejects(f.io.trash(imagePath), /symlinked/);
   assert.deepEqual(await readdir(outside), ['untouched.png']);

@@ -22,11 +22,19 @@ export const codec: DescriptionCodec = {
 
 export function storageFixture() {
   const files = new Map<string, Uint8Array>();
+  const revisions = new WeakMap<Uint8Array, number>();
+  let nextRevision = 0;
   const trashed: string[] = [];
   const faults = {trash: false, removeReceipt: false};
   const io: VaultIO = {
     checkTrash: () => {},
     exists: async path => files.has(path),
+    stat: async path => {
+      const bytes = files.get(path);
+      if (!bytes) return undefined;
+      if (!revisions.has(bytes)) revisions.set(bytes, ++nextRevision);
+      return String(revisions.get(bytes));
+    },
     read: async path => {
       if (!files.has(path)) throw new Error('Missing file');
       return Buffer.from(files.get(path)!).toString();

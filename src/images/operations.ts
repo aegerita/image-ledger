@@ -2,7 +2,7 @@ import type { ManagedImage } from './model';
 import { assertVaultPath } from './markdown';
 import { deletionProjection } from './embeds';
 import { posix } from 'node:path';
-import { isImageId, isManagedPath, isSha256 } from './ids';
+import { isManagedPath, isSha256 } from './ids';
 
 export interface EmbedRange {
   from: number;
@@ -29,7 +29,7 @@ export function operationPath(id: string): string {
 
 export function operationImageId(file: string): string | undefined {
   const id = posix.basename(file, '.json');
-  if (isImageId(id) && operationPath(id) === file) return id;
+  if (isSha256(id) && operationPath(id) === file) return id;
 }
 
 /** Recompute approved edits before trusting a writable recovery receipt. */

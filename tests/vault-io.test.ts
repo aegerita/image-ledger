@@ -80,7 +80,7 @@ test('receipts are writable and removable only in their allowed hidden paths', a
   await assert.rejects(f.io.write('Note.md', 'changed'), /Only current staging/);
   await f.io.remove(staging);
   assert.deepEqual(await f.io.pendingPaths(), []);
-  for (const id of ['a'.repeat(64), `v2-${'b'.repeat(64)}`]) {
+  for (const id of ['a'.repeat(64), 'b'.repeat(64)]) {
     const receipt = operationPath(id);
     await f.io.write(receipt, '{}');
     assert.deepEqual(await f.io.operationPaths(), [receipt]);

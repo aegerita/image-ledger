@@ -171,12 +171,10 @@ export class MediaStore {
     const bytes = await this.io.readBinary(imagePath);
     if (`.${detectImageFormat(bytes)}` !== posix.extname(imagePath)) throw new Error('The image format does not match its filename.');
     const id = posix.parse(imagePath).name;
-    const legacy = isSha256(id);
     let description: string;
-    if (!legacy || expectedIdentity) {
+    if (expectedIdentity) {
       const inspected = await this.codec.inspect(bytes);
-      if (!legacy && inspected.id !== id) throw new Error('The image content no longer matches its normalized filename.');
-      if (expectedIdentity && inspected.id !== expectedIdentity) throw new Error('The existing image has a different identity.');
+      if (inspected.id !== expectedIdentity) throw new Error('The existing image has a different identity.');
       description = inspected.description;
     } else {
       description = await this.codec.readDescription(bytes);
@@ -229,10 +227,9 @@ export class MediaStore {
       await this.checkUnfinishedDeletion(identity);
       const pinned = pending.imagePath;
       const pinnedId = pinned ? posix.parse(pinned).name : undefined;
-      const legacyDestination = isSha256(pinnedId);
+      const legacyDestination = pinnedId !== identity;
       const destinationError = 'The staged image destination does not match its normalized ID.';
-      if (pinned && (!isManagedPath(pinned) || posix.extname(pinned) !== `.${pending.format}`
-        || (!legacyDestination && pinnedId !== identity))) {
+      if (pinned && (!isManagedPath(pinned) || posix.extname(pinned) !== `.${pending.format}`)) {
         throw new Error(destinationError);
       }
       const prefix = pending.storageFolder ? `${pending.storageFolder}/` : '';
@@ -248,7 +245,7 @@ export class MediaStore {
         const {name, ext} = posix.parse(candidate);
         if (name === identity && await this.io.exists(candidate)) {
           existing.push(candidate);
-        } else if (isSha256(name) && ext === `.${pending.format}` && await this.legacyIdentity(candidate) === identity) {
+        } else if (ext === `.${pending.format}` && await this.legacyIdentity(candidate) === identity) {
           existing.push(candidate);
         }
       }
@@ -323,8 +320,7 @@ export class MediaStore {
     if (!image.checksum) throw new Error('Reload the image before editing its description.');
     const before = await this.io.readBinary(image.imagePath);
     if (sha256(before) !== image.checksum) throw new Error('The image changed. Open its description again.');
-    if (`.${detectImageFormat(before)}` !== posix.extname(image.imagePath)
-      || (!isSha256(image.id) && await this.codec.identity(before) !== image.id)) {
+    if (`.${detectImageFormat(before)}` !== posix.extname(image.imagePath)) {
       throw new Error('Image identity changed.');
     }
     const bytes = await this.codec.describe(before, description);
@@ -404,8 +400,7 @@ export class MediaStore {
         throw new Error('The image changed during deletion preview. Open a fresh preview.');
       }
       const captures = await this.pendingCaptures();
-      const identity = captures.length && isSha256(image.id)
-        ? await this.codec.identity(bytes).catch(() => undefined) : image.id;
+      const identity = captures.length ? await this.codec.identity(bytes).catch(() => undefined) : undefined;
       for (const pending of captures) {
         if (pending.imagePath === image.imagePath || pending.byteHash === image.checksum
           || (identity && await this.codec.identity(await this.stagedBytes(pending)).catch(() => undefined) === identity)) {

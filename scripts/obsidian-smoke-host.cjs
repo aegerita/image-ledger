@@ -158,7 +158,7 @@ module.exports = async (app, config) => {
   const checkImages = () => {
     assert.equal(images().length, 2);
     for (const item of images()) {
-      assert.match(item.id, /^v2-[0-9a-f]{64}$/);
+      assert.match(item.id, /^[0-9a-f]{64}$/);
       assert.equal(path.posix.basename(item.imagePath), item.id + path.posix.extname(item.imagePath));
       assert.equal(path.posix.dirname(item.imagePath), 'images');
     }

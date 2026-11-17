@@ -128,8 +128,8 @@ async function benchmark(root: string, executable: string, version: string): Pro
         return description;
       }, id));
       assert.equal(phases[phase].imageReads, 2, phase);
-      assert.equal(phases[phase].captionReads, 0, phase);
-      assert.equal(phases[phase].inspections, 1, phase);
+      assert.equal(phases[phase].captionReads, 1, phase);
+      assert.equal(phases[phase].inspections, 0, phase);
       assert.equal(phases[phase].captionWrites, 1, phase);
       assert.equal(await codec.readDescription(await readFile(path.join(root, imagePath))), description);
     }

@@ -18,7 +18,7 @@ async function importImage(f: ReturnType<typeof storageFixture>, bytes: Uint8Arr
 test('capture stores one hash-named image with embedded description and no permanent record files', async () => {
   const f = storageFixture();
   const image = await importImage(f);
-  assert.equal(image.id, `v2-${sha256(JPEG)}`);
+  assert.equal(image.id, `${sha256(JPEG)}`);
   assert.equal(image.imagePath, `images/${image.id}.jpg`);
   assert.equal(await codec.readDescription(f.files.get(image.imagePath)!), 'A synthetic image');
   assert.deepEqual([...f.files.keys()], [image.imagePath]);
@@ -269,7 +269,7 @@ test('interrupted cleanup can recover from the committed image when staged bytes
 test('damaged payloads and forged destinations retain their receipts and cannot overwrite another image', async () => {
   const f = storageFixture();
   const pending = await f.store.stage({bytes: JPEG}, 'Note.md');
-  for (const path of [legacyPath, `images/v2-${'a'.repeat(64)}.jpg`]) {
+  for (const path of [legacyPath, `images/${'a'.repeat(64)}.jpg`]) {
     pending.imagePath = path;
     await f.io.write(pending.transactionPath, JSON.stringify(pending));
     await assert.rejects(f.store.prepare(pending), /destination/);
@@ -287,7 +287,7 @@ test('legacy capture recovery retains a committed path and retargets an uncommit
   await f.io.write(pending.transactionPath, JSON.stringify(pending));
   const [uncommitted] = await f.store.pendingCaptures();
   const fresh = await f.store.prepare(uncommitted);
-  assert.equal(fresh.record.imagePath, `images/v2-${sha256(JPEG)}.jpg`);
+  assert.equal(fresh.record.imagePath, `images/${sha256(JPEG)}.jpg`);
 
   const saved = await codec.describe(JPEG, 'Legacy saved caption');
   f.files.set(legacyPath, saved);
@@ -383,7 +383,7 @@ test('legacy deletion receipts block reimports and resume when the image is alre
   await assert.rejects(f.store.prepare(staged), /missing or changed legacy image/);
   await f.store.recoverDeletions(async () => {});
   assert.equal(f.files.has(receipt), false);
-  assert.match((await f.store.prepare(staged)).record.id, /^v2-/);
+  assert.equal((await f.store.prepare(staged)).record.id, await codec.identity(JPEG));
 });
 
 test('a failed staging write leaves an auditable receipt for the incomplete capture', async () => {

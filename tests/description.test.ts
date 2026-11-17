@@ -39,7 +39,7 @@ test('caption edits and export copies retain JPEG/PNG identity and EXIF metadata
   for (const original of fixtures) {
     const savedBytes = Buffer.from(original);
     const baseline = await codec.inspect(original);
-    assert.match(baseline.id, /^v2-[0-9a-f]{64}$/);
+    assert.match(baseline.id, /^[0-9a-f]{64}$/);
     assert.equal(baseline.id, await imageIdentity(original));
     const metadata = await readExif(original);
     assert.equal(metadata?.latitude, -12.5);
@@ -110,8 +110,8 @@ test('ICC profiles, all MPF frames and PNG text survive caption edits and reimpo
 });
 
 test('v2 identity is pinned and includes EXIF, ICC, PNG text and every JPEG frame', async () => {
-  assert.equal(await imageIdentity(JPEG), 'v2-7886d70c21769cbdf1067103840cc7a33f7f58df57dbfc27945f5843e95a4f90');
-  assert.equal(await imageIdentity(PNG), 'v2-07a2797da15f91abd8c003e6c5c21b0d2d819d89bb845aad953c9e273ede5cde');
+  assert.equal(await imageIdentity(JPEG), '7886d70c21769cbdf1067103840cc7a33f7f58df57dbfc27945f5843e95a4f90');
+  assert.equal(await imageIdentity(PNG), '07a2797da15f91abd8c003e6c5c21b0d2d819d89bb845aad953c9e273ede5cde');
   const changed = Buffer.from(JPEG);
   changed[25]++; // Change the first quantization table without changing the frame length.
   const comment = Buffer.concat([PNG.subarray(0, -12), pngChunk('tEXt', Buffer.from('Comment\0Synthetic comment')), PNG.subarray(-12)]);

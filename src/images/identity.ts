@@ -190,7 +190,7 @@ function identity(chunks: Buffer[], movableMetadata: Buffer[], xmp: string): str
   const hash = createHash('sha256').update(`Image Ledger image identity v2\0${JSON.stringify([xmp, metadataSize])}\0`);
   for (const chunk of movableMetadata) hash.update(chunk);
   for (const chunk of chunks) hash.update(chunk);
-  return `v2-${hash.digest('hex')}`;
+  return hash.digest('hex');
 }
 
 export async function imageIdentity(bytes: Uint8Array): Promise<string> {

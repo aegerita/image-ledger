@@ -29,7 +29,7 @@ npm test
 
 The v2 ID hashes the encoded image and metadata without invoking ExifTool. It normalizes XMP packet layout, the default description, the toolkit marker, PNG text and EXIF chunk placement, and JPEG MPF offsets affected by caption length. It includes alternate-language captions, EXIF, ICC, and all trailing images. Treat the hash format as permanent. The codec uses bounded ExifTool calls in private temporary directories and checks caption readback and v2 identity before returning new bytes.
 
-Earlier unprefixed filenames are path aliases. Capture compares their v2 identity from current bytes and verifies a duplicate before reusing its path. A temporary cache avoids rereading unchanged legacy files during each capture. Edits and deletion receipts use the actual file checksum.
+Both filename generations use bare SHA-256 hex. A filename that differs from the current digest can still serve as a path alias. Capture compares the current identity from file bytes and verifies a duplicate before reusing its path. A temporary cache avoids rereading unchanged candidates. Edits and deletion receipts use the actual file checksum.
 
 Capture stages received bytes, computes the identity and checks for an existing image, then saves the image before inserting the embed. Its temporary receipt records the original note and the verified image path. Finish note insertion before clearing staging. Note renames retarget pending captures, and interrupted cleanup can reuse the committed image.
 

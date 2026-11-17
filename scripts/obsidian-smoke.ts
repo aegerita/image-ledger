@@ -150,7 +150,7 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
   assert.ok(!files.some(file => /(?:^|\/)image-records\/|\.xmp$|(?:^|\/)image-library\.base$/i.test(file)), 'Record, sidecar, or Bases file created');
   const images = files.filter(file => /(?:^|\/)images\/[^/]+\.(jpg|png)$/.test(file));
   assert.equal(images.length, 2, 'Expected exactly two managed payloads');
-  for (const image of images) assert.match(path.posix.basename(image), /^v2-[0-9a-f]{64}\.(jpg|png)$/, `Invalid managed filename: ${image}`);
+  for (const image of images) assert.match(path.posix.basename(image), /^[0-9a-f]{64}\.(jpg|png)$/, `Invalid managed filename: ${image}`);
   const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
   assert.equal(marker.version, 1);
   const codec = createDescriptionCodec(exiftoolPath);

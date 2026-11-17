@@ -18,45 +18,25 @@ npm test
 | File | Responsibility |
 | --- | --- |
 | `src/main.ts` | Plugin startup, commands, and event registration. |
-| `src/captures.ts` | Capture batches, description prompts, and recovery on one shared queue. |
-| `src/images/` | Image model, byte validation/metadata, record formats, managed embed lookup, and queued record mutations. No Obsidian imports. |
-| `src/obsidian/notes.ts` | Editor tracking, insertion positions, and image embeds in notes. |
-| `src/obsidian/library.ts` | Record initialization, contextual menus, description synchronization, renames, and audits. |
-| `src/obsidian/ui.ts` | Description dialog, image picker, and settings tab. |
-| `src/obsidian/vault-io.ts`, `anchors.ts` | Filesystem access and CodeMirror insertion state. |
-| `src/settings.ts` | Saved settings and defaults. |
+| `src/captures.ts` | Capture batching, description prompts, and recovery on a shared queue. |
+| `src/images/description.ts` | ExifTool metadata reads, verified writes, and normalized hashing. |
+| `src/images/store.ts` | Catalog from image filenames, deduplication, staging, and deletion recovery. |
+| `src/images/markdown.ts`, `embeds.ts` | Relative embeds and Lezer-based reference parsing. |
+| `src/obsidian/notes.ts`, `anchors.ts` | Tracked editor insertion, recovery, and guarded note edits. |
+| `src/obsidian/library.ts`, `ui.ts` | Image picker, context menus, descriptions, deletion preview, and settings. |
+| `src/obsidian/vault-io.ts` | Vault path validation, atomic image publication and replacement, and Trash. |
 
-Capture flow: stage received bytes, prepare or reuse an image, ask for a description, insert into the original note, then clear staging. Preserve that order so interrupted captures remain recoverable. Renames and recovery share the capture queue. Descriptions edited in Bases are read back before capture processing; avoid replacing them with stale values.
+The normalized ID hashes a temporary copy with a fixed default XMP description and the `Image::ExifTool 13.58` toolkit marker. This preserves IDs across the supported ExifTool versions. Changing either fixed value requires an explicit migration. Saved images use the installed writer's normal toolkit marker. The codec runs with bounded subprocess calls in private temporary directories and verifies description readback, normalized identity, encoded image data, EXIF, ICC and the second embedded image before returning new bytes.
 
-`images/embeds.ts` parses Markdown images with Lezer, excluding code, escaped markers, HTML comments and frontmatter. It resolves URL-encoded relative destinations against the source note and matches the resulting image path. Cursor lookup supports nested alt text and inline destinations; save reports also resolve reference-style embeds. `NoteImages` uses Obsidian's link index to discover notes and its embed cache to report wiki embeds. The parser and its licenses are bundled, so lookup does not depend on an Obsidian parser export.
+Capture stages received bytes, computes the identity and checks for an existing image, then saves the image before inserting the embed. Its temporary receipt records the original note and the verified image path. Finish note insertion before clearing staging. Note renames retarget pending captures, and interrupted cleanup can reuse the committed image.
 
-`RecordLibrary` builds editor/file menus synchronously from its current catalog. Both handlers use `addRecordMenu` for available actions. The edit callback captures the image ID, refreshes the record before opening the dialog, and uses the command's existing save path. A removed record reports an error instead of falling back to another image. `main.ts` registers and disposes the workspace event hooks through the plugin lifecycle.
-
-`images/ids.ts` generates 12 lowercase hex characters from six random bytes and validates both short IDs and existing UUIDs. SHA-256 remains separate. Before staging, check the catalog, indexed filenames, pinned output paths, and hidden receipts; reserve the ID exclusively in `.image-ledger/ids/`. Retry collisions up to 100 times. Keep reservation files after cleanup so IDs cannot be reused. Deletion writes `deleted` into the reservation for the image and canceled capture IDs. This content-free marker blocks stale saves, capture recovery and restored catalog entries. Catalog scans reject the same ID with different hashes. XMP stores short IDs literally and UUIDs as `urn:uuid:<id>`.
-
-`MediaStore` owns one queue for record scans, capture descriptions, renames, and reconciliation. Existing-record changes share a read/apply/compare-and-swap loop; raw persistence is private. Description saves keep the submitted caption across unrelated property edits, while a newer saved caption/status pair wins. Writes compare the original text inside Obsidian's atomic `Vault.process` callback and reapply the change to current fields on conflict.
-
-Before changing notes, the store atomically saves the semantic intent and baseline in `.image-ledger/operations/<image-id>.json`. `operations.ts` validates these receipts. `NoteImages` checkpoints each note's exact before/after text and eligible embed ranges before applying it; its callback must not call queued store operations. Retries and startup replay use these persisted ranges, preserving untouched custom captions. A newly added reference starts from the current saved snapshot.
-
-Startup replays unfinished saves before reconciliation. A new mutation of the same image must first finish its previous save. Each attempt records its target snapshot before writing; a matching saved snapshot proves the commit happened, so recovery preserves later Bases edits even when cleanup failed. Notes, XMP, and the record are replayable; only a completed save removes its receipt. Independently changed or missing planned notes stop recovery for that image with the receipt retained. Catalog scans report failed saves and continue loading other images; failed identities remain indexed for duplicate detection. Before preparing an import, validated unfinished receipts also block matching image hashes, even if their records are missing or malformed. Mutations of the affected image must still replay its receipt successfully before proceeding. Capture recovery and rename processing continue with unaffected images. This is process-interruption recovery with conservative conflicts, not a transaction across multiple plugin instances. Receipts temporarily contain source-note text and remain local vault data.
-
-Deletion shares the capture queue after image selection, so even picker-driven deletion waits for active captures. Its confirmation contains a full Markdown scan and staged captures with matching bytes. The store validates the preview identity and file availability, requires recoverable Trash, journals a `delete` intent with complete removal projections, marks deleted IDs, removes note references, and calls `app.fileManager.trashFile` for the image, sidecar and record. Only then does it remove matching staging files and the receipt. The receipt parser recomputes deletion projections to reject prose removal or unrelated edits. Recovery uses only the approved existing files, tolerates already-trashed files, and stops on changed notes or file identities. Restored deleted records remain outside the catalog; audits also flag restored payloads and sidecars. There are no remote deletion jobs or adapters.
-
-Record-folder renames retarget affected receipts before replay. Startup can locate a missing record by one matching ID filename, record ID, and image hash, including when the rename handler never ran. Multiple matches stop recovery. The receipt keeps its historical target snapshot as commit evidence; the discovered file location becomes the record's current path on commit.
-
-Keep related behavior together. Extract a module when it has a clear job; avoid adding layers or folders just to shorten a file. Linear holds active plans; this guide describes the current code.
-
-This is one plugin package, following the [Obsidian sample plugin](https://github.com/obsidianmd/obsidian-sample-plugin) layout. Supporting scripts live in `scripts/`. Synthetic fixture generators are tracked in `tests/fixtures.ts` and `scripts/test-vault.ts`; their generated `test-vaults/` output stays ignored.
+Description editing checks the image checksum captured before the dialog, then publishes the verified replacement at the same path. Deletion stores the approved before and after note text and the exact image checksum in a temporary receipt. Recovery recomputes the embed ranges, stops on independent edits, and uses Obsidian's Trash. Receipts may temporarily contain source note text. File checks and queues protect local operations; concurrent writes from another vault instance are outside that guarantee.
 
 ## Verify changes
 
-Run `npm test` for code changes. For plugin or UI changes, also run:
+Run the unit and host commands in [TESTING.md](TESTING.md) for plugin changes.
 
-```sh
-npm run test:obsidian
-```
-
-The host test creates a fresh synthetic vault and uses Obsidian's CLI/API. Read [TESTING.md](TESTING.md) for prerequisites, receipts, and coverage limits. Never test in a personal vault or use native GUI automation. Documentation-only edits need a link and accuracy check.
+The host test creates a fresh synthetic vault and uses Obsidian's CLI/API. Never test in a personal vault or use native GUI automation. Documentation-only edits need a link and accuracy check.
 
 ## Install a build
 

@@ -1,170 +1,114 @@
 import { Notice, TFile, type App, type Editor, type MarkdownFileInfo, type MarkdownView, type Menu, type TAbstractFile } from 'obsidian';
-import type { ImageRecord } from '../images/model';
+import type { ManagedImage } from '../images/model';
 import { findManagedImage, managedImageEmbeds } from '../images/embeds';
-import { MediaStore, type PendingCapture, type PreparedCapture, type SynchronizeRecord } from '../images/store';
-import type { ProjectionJournal } from '../images/operations';
-import { NoteImages, type SkippedEmbed } from './notes';
-import { DeleteImageModal, DescriptionSaveReview, ImageAuditModal, RecordPicker } from './ui';
+import { MediaStore } from '../images/store';
+import { NoteImages } from './notes';
+import { DeleteImageModal, ImageAuditModal, ImagePicker } from './ui';
 
-export class RecordLibrary {
+export class ImageLibrary {
   private initialized?: Promise<void>;
-  private recordTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private synchronize = this.synchronizer();
-
-  private synchronizer(overwrite?: SkippedEmbed): SynchronizeRecord {
-    return Object.assign(
-      (previous: ImageRecord, next: ImageRecord, journal: ProjectionJournal) => this.notes.updateEmbeds(previous, next, journal, overwrite),
-      {
-        failed: (error: Error) => this.report(error),
-        references: (record: ImageRecord) => this.notes.references(record).paths,
-        remove: (record: ImageRecord, journal: ProjectionJournal) => this.notes.removeEmbeds(record, journal),
-        saved: (record: ImageRecord, journal: ProjectionJournal) => {
-          const report = this.notes.saveReport(journal, record);
-          const summary = `Updated ${report.updated} embeds in ${report.notes} notes. Skipped ${report.skipped.length}.`;
-          if (!report.skipped.length || typeof document === 'undefined') {
-            new Notice(summary);
-            return;
-          }
-          const content = document.createDocumentFragment();
-          content.append(summary + ' ' + report.skipped.map(item => `${item.path}: ${item.reason}`).join('; ') + ' ');
-          const review = document.createElement('button');
-          review.textContent = 'Review skipped embeds';
-          review.addEventListener('click', () => new DescriptionSaveReview(this.app, report.skipped,
-            item => this.overwriteSkipped(record, item)).open());
-          content.append(review);
-          new Notice(content, 12000);
-        },
-      },
-    );
-  }
-
-  private async overwriteSkipped(record: ImageRecord, item: SkippedEmbed): Promise<SkippedEmbed[]> {
-    await this.store.refresh(this.synchronize);
-    const current = this.store.allRecords().find(candidate => candidate.id === record.id);
-    if (!current || current.description !== record.description) {
-      throw new Error('The image description changed. Save again and review the new results.');
-    }
-    let remaining: SkippedEmbed[] = [];
-    const synchronize = this.synchronizer(item);
-    synchronize.saved = (saved, journal) => {
-      remaining = this.notes.saveReport(journal, saved).skipped;
-    };
-    await this.store.setDescription(current, current.description, synchronize, record.description);
-    return remaining;
-  }
 
   constructor(
     private app: App,
     readonly store: MediaStore,
     private notes: NoteImages,
     private report: (error: unknown) => void,
-    private enqueue: (action: () => Promise<void>) => unknown,
+    private enqueue: (action: () => Promise<void>) => Promise<void>,
   ) {}
 
   ready(): Promise<void> {
-    return this.initialized ??= this.store.initialize(this.synchronize).catch(error => {
+    return this.initialized ??= this.store.refresh().then(async () => {
+      try {
+        await this.store.recoverDeletions((image, notes) => this.notes.removeEmbeds(image, notes));
+      } catch (error) {
+        this.report(error);
+      }
+    }).catch(error => {
       this.initialized = undefined;
       throw error;
     });
   }
 
-  dispose(): void {
-    for (const timer of this.recordTimers.values()) clearTimeout(timer);
-  }
-
-  async openRecord(record: ImageRecord): Promise<void> {
-    await this.app.workspace.openLinkText(record.recordPath, '', true);
-  }
-
-  onModify(file: {path: string}): void {
-    const recordPath = file.path;
-    if (!/(?:^|\/)image-records\/[^/]+\.md$/.test(recordPath)) return;
-    const existing = this.recordTimers.get(recordPath);
-    if (existing) clearTimeout(existing);
-    this.recordTimers.set(recordPath, setTimeout(() => {
-      this.recordTimers.delete(recordPath);
-      void this.store.reconcile(file.path, this.synchronize).catch(this.report);
-    }, 500));
-  }
-
-  reconcileAll(): Promise<void> {
-    return this.store.refresh(this.synchronize);
-  }
-
-  prepare(pending: PendingCapture): Promise<PreparedCapture> {
-    return this.store.prepare(pending, this.synchronize);
-  }
-
-  rename(file: {path: string}, previousPath: string): Promise<void> {
-    return this.store.rename(previousPath, file.path, this.synchronize);
-  }
-
-  addEditorMenu(menu: Menu, editor: Editor, info: MarkdownFileInfo | MarkdownView, describe: (record: ImageRecord) => Promise<string | null>): void {
-    if (!info.file || ('getMode' in info && info.getMode() !== 'source')) return;
-    const selected = findManagedImage(editor.getValue(), info.file.path, this.store.allRecords(), {
-      from: editor.posToOffset(editor.getCursor('from')),
-      to: editor.posToOffset(editor.getCursor('to')),
-    });
-    if (selected) this.addRecordMenu(menu, selected.record, describe);
-  }
-
-  addFileMenu(menu: Menu, file: TAbstractFile, describe: (record: ImageRecord) => Promise<string | null>): void {
-    if (!(file instanceof TFile)) return;
-    const record = this.store.allRecords().find(record => record.imagePath === file.path || record.recordPath === file.path);
-    if (record) this.addRecordMenu(menu, record, describe);
-  }
-
-  private addRecordMenu(menu: Menu, record: ImageRecord, describe: (record: ImageRecord) => Promise<string | null>): void {
-    menu.addItem(item => item
-      .setTitle('Image Ledger: Edit image description')
-      .setIcon('pencil')
-      .onClick(() => this.editDescription(describe, record.id)));
-    menu.addItem(item => item
-      .setTitle('Image Ledger: Delete image everywhere...')
-      .setIcon('trash-2')
-      .onClick(() => this.deleteImage(record.id)));
-  }
-
-  async deleteImage(recordId?: string): Promise<void> {
-    await this.selectRecord(async selected => {
-      await this.enqueue(async () => {
-        await this.store.refresh(this.synchronize);
-        const record = this.store.allRecords().find(record => record.id === selected.id);
-        if (!record) throw new Error('This image record is no longer available.');
-        const preview = await this.notes.deletionPreview(record);
-        const assets = await this.store.deletionAssets(record);
-        const confirmed = await new Promise<boolean>(resolve => {
-          new DeleteImageModal(this.app, record, preview, assets, resolve).open();
-        });
-        if (!confirmed || preview.blocked.length) return;
-        const current = await this.notes.deletionPreview(record);
-        if (JSON.stringify(current) !== JSON.stringify(preview)) {
-          throw new Error('Image references changed. Open the deletion preview again.');
-        }
-        await this.store.deleteImage(record, preview.notes, assets, this.synchronize);
-        new Notice('Image deleted from this vault.');
-      });
-    }, recordId);
-  }
-
-  async editDescription(describe: (record: ImageRecord) => Promise<string | null>, recordId?: string): Promise<void> {
-    await this.selectRecord(async record => {
-      const description = await describe(record);
-      if (description === null) return;
-      await this.store.setDescription(record, description, this.synchronize);
-    }, recordId);
-  }
-
-  async audit(): Promise<void> {
+  async openLibrary(): Promise<void> {
     try {
-      const report = await this.store.audit();
-      new ImageAuditModal(this.app, report).open();
+      await this.ready();
+      await this.store.refresh();
+      const images = this.store.allRecords();
+      if (!images.length) return this.emptyNotice();
+      new ImagePicker(this.app, images, image => {
+        void this.app.workspace.openLinkText(image.imagePath, '', true).catch(this.report);
+      }).open();
     } catch (error) {
       this.report(error);
     }
   }
 
-  private async selectRecord(action: (record: ImageRecord) => Promise<void>, recordId?: string): Promise<void> {
+  addEditorMenu(menu: Menu, editor: Editor, info: MarkdownFileInfo | MarkdownView, describe: (image: ManagedImage) => Promise<string | null>): void {
+    if (!info.file || ('getMode' in info && info.getMode() === 'preview')) return;
+    const selected = findManagedImage(editor.getValue(), info.file.path, this.store.allRecords(), {
+      from: editor.posToOffset(editor.getCursor('from')),
+      to: editor.posToOffset(editor.getCursor('to')),
+    });
+    if (selected) this.addImageMenu(menu, selected.record, describe);
+  }
+
+  addFileMenu(menu: Menu, file: TAbstractFile, describe: (image: ManagedImage) => Promise<string | null>): void {
+    if (!(file instanceof TFile)) return;
+    const image = this.store.allRecords().find(image => image.imagePath === file.path);
+    if (image) this.addImageMenu(menu, image, describe);
+  }
+
+  private addImageMenu(menu: Menu, image: ManagedImage, describe: (image: ManagedImage) => Promise<string | null>): void {
+    menu.addItem(item => item
+      .setTitle('Image Ledger: Edit image description')
+      .setIcon('pencil')
+      .onClick(() => this.editDescription(describe, image.id)));
+    menu.addItem(item => item
+      .setTitle('Image Ledger: Delete image everywhere...')
+      .setIcon('trash-2')
+      .onClick(() => this.deleteImage(image.id)));
+  }
+
+  async deleteImage(imageId?: string): Promise<void> {
+    await this.selectImage(selected => this.enqueue(async () => {
+      const image = await this.store.load(selected.imagePath);
+      const preview = await this.notes.deletionPreview(image);
+      const confirmed = await new Promise<boolean>(resolve => {
+        new DeleteImageModal(this.app, image, preview, resolve).open();
+      });
+      if (!confirmed || preview.blocked.length) return;
+      const current = await this.notes.deletionPreview(image);
+      if (JSON.stringify(current) !== JSON.stringify(preview)) {
+        throw new Error('Image references changed. Open the deletion preview again.');
+      }
+      await this.store.deleteImage(image, preview.notes, (record, notes) => this.notes.removeEmbeds(record, notes));
+      new Notice('Image deleted from this vault.');
+    }), imageId);
+  }
+
+  async editDescription(describe: (image: ManagedImage) => Promise<string | null>, imageId?: string): Promise<void> {
+    await this.selectImage(selected => this.enqueue(async () => {
+      const image = await this.store.load(selected.imagePath);
+      const description = await describe(image);
+      if (description === null) return;
+      await this.store.setDescription(image, description);
+      new Notice('Image description saved in the image.');
+    }), imageId);
+  }
+
+  async audit(): Promise<void> {
+    try {
+      new ImageAuditModal(this.app, await this.store.audit()).open();
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
+  private emptyNotice(): void {
+    new Notice('No managed images yet. Paste a JPEG or PNG into a note.');
+  }
+
+  private async selectImage(action: (image: ManagedImage) => Promise<void>, imageId?: string): Promise<void> {
     try {
       const active = this.app.workspace.getActiveFile();
       const info = this.app.workspace.activeEditor as MarkdownFileInfo | MarkdownView | null;
@@ -176,30 +120,25 @@ export class RecordLibrary {
         to: editor.posToOffset(editor.getCursor('to')),
       } : undefined;
       await this.ready();
-      await this.store.refresh(this.synchronize);
-      const records = this.store.allRecords();
-      if (recordId) {
-        const record = records.find(record => record.id === recordId);
-        if (!record) throw new Error('This image record is no longer available.');
-        return await action(record);
+      await this.store.refresh();
+      const images = this.store.allRecords();
+      if (imageId) {
+        const image = images.find(image => image.id === imageId);
+        if (!image) throw new Error('This managed image is no longer available.');
+        return await action(image);
       }
-      if (active) {
-        const record = records.find(record => record.recordPath === active.path || record.imagePath === active.path);
-        if (record) return await action(record);
-      }
-      if (!records.length) {
-        new Notice('No images yet. Paste a JPEG or PNG into a note.');
-        return;
-      }
-      let choices = records;
+      const activeImage = images.find(image => image.imagePath === active?.path);
+      if (activeImage) return await action(activeImage);
+      if (!images.length) return this.emptyNotice();
+      let choices = images;
       if (active?.extension === 'md') {
         const content = text ?? await this.app.vault.read(active);
-        const selected = selection && findManagedImage(content, active.path, records, selection);
+        const selected = selection && findManagedImage(content, active.path, images, selection);
         if (selected) return await action(selected.record);
-        const inNote = [...new Set(managedImageEmbeds(content, active.path, records).map(embed => embed.record))];
+        const inNote = [...new Set(managedImageEmbeds(content, active.path, images).map(embed => embed.record))];
         if (inNote.length) choices = inNote;
       }
-      new RecordPicker(this.app, choices, record => void action(record).catch(this.report)).open();
+      new ImagePicker(this.app, choices, image => void action(image).catch(this.report)).open();
     } catch (error) {
       this.report(error);
     }

@@ -3,12 +3,16 @@ export type StorageLayout = 'flat' | 'import-year' | 'note-year';
 export interface Settings {
   interceptPaste: boolean;
   interceptDrop: boolean;
-  showRecordLink: boolean;
-  syncCustomAlt: boolean;
   storageLayout: StorageLayout;
+  exiftoolPath: string;
 }
 
-export const DEFAULTS: Settings = {interceptPaste: true, interceptDrop: true, showRecordLink: true, syncCustomAlt: false, storageLayout: 'flat'};
+export const DEFAULTS: Settings = {
+  interceptPaste: true,
+  interceptDrop: true,
+  storageLayout: 'flat',
+  exiftoolPath: 'exiftool',
+};
 
 export function isStorageLayout(value: unknown): value is StorageLayout {
   return value === 'flat' || value === 'import-year' || value === 'note-year';
@@ -19,8 +23,8 @@ export function settingsFromData(data: unknown): Settings {
   return {
     interceptPaste: typeof saved?.interceptPaste === 'boolean' ? saved.interceptPaste : DEFAULTS.interceptPaste,
     interceptDrop: typeof saved?.interceptDrop === 'boolean' ? saved.interceptDrop : DEFAULTS.interceptDrop,
-    showRecordLink: typeof saved?.showRecordLink === 'boolean' ? saved.showRecordLink : DEFAULTS.showRecordLink,
-    syncCustomAlt: typeof saved?.syncCustomAlt === 'boolean' ? saved.syncCustomAlt : DEFAULTS.syncCustomAlt,
     storageLayout: isStorageLayout(saved?.storageLayout) ? saved.storageLayout : DEFAULTS.storageLayout,
+    exiftoolPath: typeof saved?.exiftoolPath === 'string' && saved.exiftoolPath.trim()
+      ? saved.exiftoolPath.trim() : DEFAULTS.exiftoolPath,
   };
 }

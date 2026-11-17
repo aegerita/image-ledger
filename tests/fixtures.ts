@@ -3,14 +3,14 @@
 export const JPEG = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAADAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDGooor7U+RP//Z', 'base64');
 export const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAFElEQVR4nGOUq7jEwMDAxMDAgKAAGlgBbuw7gIkAAAAASUVORK5CYII=', 'base64');
 
-function exifTiff(options: { date?: string; offset?: string; subsecond?: string; digitized?: boolean; gps?: boolean } = {}): Buffer {
+function exifTiff(options: { offset?: string; subsecond?: string; gps?: boolean }): Buffer {
   const buffer = Buffer.alloc(4096);
   buffer.write('II', 0);
   buffer.writeUInt16LE(42, 2);
   buffer.writeUInt32LE(8, 4);
-  const fields: [number, string][] = [[options.digitized ? 0x9004 : 0x9003, options.date ?? '2026:10:17 12:34:56']];
-  if (options.offset !== undefined) fields.push([options.digitized ? 0x9012 : 0x9011, options.offset]);
-  if (options.subsecond !== undefined) fields.push([options.digitized ? 0x9292 : 0x9291, options.subsecond]);
+  const fields: [number, string][] = [[0x9003, '2026:10:17 12:34:56']];
+  if (options.offset !== undefined) fields.push([0x9011, options.offset]);
+  if (options.subsecond !== undefined) fields.push([0x9291, options.subsecond]);
   const ifdCount = options.gps ? 5 : 4;
   const exifStart = 8 + 2 + ifdCount * 12 + 4;
   const gpsStart = exifStart + 2 + fields.length * 12 + 4;
@@ -69,14 +69,14 @@ function exifTiff(options: { date?: string; offset?: string; subsecond?: string;
   return buffer.subarray(0, dataOffset);
 }
 
-export function jpegWithExif(options: Parameters<typeof exifTiff>[0] = {}): Buffer {
+export function jpegWithExif(options: Parameters<typeof exifTiff>[0]): Buffer {
   const payload = Buffer.concat([Buffer.from('Exif\0\0', 'ascii'), exifTiff(options)]);
   const header = Buffer.from([0xff, 0xe1, 0, 0]);
   header.writeUInt16BE(payload.length + 2, 2);
   return Buffer.concat([JPEG.subarray(0, 2), header, payload, JPEG.subarray(2)]);
 }
 
-export function pngWithExif(options: Parameters<typeof exifTiff>[0] = {}): Buffer {
+export function pngWithExif(options: Parameters<typeof exifTiff>[0]): Buffer {
   const payload = exifTiff(options);
   const chunk = Buffer.alloc(payload.length + 12);
   chunk.writeUInt32BE(payload.length);

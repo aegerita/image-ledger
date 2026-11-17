@@ -3,7 +3,7 @@
   "name": "Image Ledger",
   "version": "0.1.0",
   "minAppVersion": "1.10.0",
-  "description": "Save pasted JPEG and PNG images with short 12-character IDs for new images, preserved metadata, descriptions and linked image records for Bases.",
+  "description": "Save JPEG and PNG images with embedded descriptions and deduplicate by normalized SHA-256.",
   "author": "aegerita",
   "isDesktopOnly": true
 }

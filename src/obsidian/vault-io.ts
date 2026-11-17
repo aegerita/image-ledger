@@ -1,171 +1,150 @@
 import { FileSystemAdapter, TFile, type FileManager, type Vault } from 'obsidian';
-import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
+import { lstat, link, mkdir, open, readFile, readdir, realpath, rename, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { assertVaultPath } from '../images/markdown';
+import { sha256 } from '../images/media';
 import type { VaultIO } from '../images/store';
-import { isImageId } from '../images/ids';
 
 export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'trashFile'>): VaultIO {
-  if (!(vault.adapter instanceof FileSystemAdapter)) {
-    throw new Error('Image Ledger currently requires a desktop filesystem vault.');
-  }
+  if (!(vault.adapter instanceof FileSystemAdapter)) throw new Error('Image Ledger requires a desktop filesystem vault.');
   const basePath = vault.adapter.getBasePath();
+  const root = realpath(basePath);
+
+  const resolve = async (relative: string) => {
+    assertVaultPath(relative);
+    const base = await root;
+    const destination = path.join(base, relative);
+    if (!destination.startsWith(base + path.sep)) throw new Error('Invalid vault path.');
+    // Reject symlinks at every boundary, including symlinked parent directories.
+    let current = base;
+    for (const segment of relative.split('/')) {
+      current = path.join(current, segment);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) throw new Error('Image Ledger refuses symlinked paths.');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return destination;
+  };
+
+  const folder = async (relative: string) => {
+    let current = '';
+    for (const segment of relative.split('/')) {
+      current += (current ? '/' : '') + segment;
+      const destination = await resolve(current);
+      try { await mkdir(destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (!(await lstat(destination)).isDirectory()) throw new Error('A media folder is not a directory.');
+      }
+    }
+  };
+
+  const writeTemporary = async (destination: string, data: Uint8Array | string) => {
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    const handle = await open(temporary, 'wx', 0o600);
+    try {
+      try {
+        await handle.writeFile(data);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      await unlink(temporary).catch(() => {});
+      throw error;
+    }
+    return temporary;
+  };
+
+  const hidden = (relative: string) => {
+    if (!/^\.image-ledger\/(?:staging\/[a-f0-9-]{36}\.(?:json|jpg|png)|operations\/[a-f0-9]{64}\.json)$/.test(relative)) {
+      throw new Error('Only current staging files and deletion receipts may be changed automatically.');
+    }
+  };
+
   const checkTrash = () => {
-    // Obsidian's trashFile also permanently deletes when trashOption is "none".
     const option = (vault as Vault & {getConfig(key: string): unknown}).getConfig('trashOption');
     if (option !== 'local' && option !== 'system') {
       throw new Error('Set Obsidian’s Deleted files setting to system Trash or the vault .trash folder before deleting images.');
     }
   };
-  const resolve = (relative: string) => {
-    const full = path.resolve(basePath, relative);
-    if (full === basePath || !full.startsWith(basePath + path.sep) || relative.includes('\\')) {
-      throw new Error('Invalid vault media path.');
+
+  const list = async (relative: string) => {
+    const directory = await resolve(relative);
+    try { return (await readdir(directory)).map(name => `${relative}/${name}`); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return [];
     }
-    return full;
-  };
-  const folder = async (relative: string) => {
-    const segments = relative.split('/').filter(Boolean);
-    let current = '';
-    for (const segment of segments) {
-      current += (current ? '/' : '') + segment;
-      if (!await vault.adapter.exists(current)) {
-        try {
-          await vault.createFolder(current);
-        } catch (error) {
-          if (!await vault.adapter.exists(current)) throw error;
-        }
-      }
-    }
-  };
-  const durableHiddenWrite = async (relative: string, data: Uint8Array | string) => {
-    const destination = resolve(relative);
-    await mkdir(path.dirname(destination), {recursive: true});
-    const temporary = `${destination}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, 'wx', 0o600);
-    try {
-      await handle.writeFile(data);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, destination);
   };
 
   return {
     checkTrash,
-    reserveId: async id => {
-      if (!isImageId(id)) throw new Error('Invalid image ID.');
-      const key = id.toLowerCase();
-      if (vault.getFiles().some(file => path.posix.parse(file.path).name.toLowerCase() === key)) return false;
-      for (const relative of [
-        `.image-ledger/staging/${key}.json`,
-        `.image-ledger/staging/${key}.jpg`,
-        `.image-ledger/staging/${key}.png`,
-        `.image-ledger/operations/${key}.json`,
-      ]) {
-        try {
-          await lstat(resolve(relative));
-          return false;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        }
+    exists: async relative => {
+      try { await lstat(await resolve(relative)); return true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return false;
       }
-      const reservation = resolve(`.image-ledger/ids/${key}`);
-      await mkdir(path.dirname(reservation), {recursive: true});
-      let handle;
+    },
+    read: async relative => readFile(await resolve(relative), 'utf8'),
+    readBinary: async relative => readFile(await resolve(relative)),
+    write: async (relative, text) => {
+      hidden(relative);
+      await folder(path.posix.dirname(relative));
+      const destination = await resolve(relative);
+      const temporary = await writeTemporary(destination, text);
+      try { await rename(temporary, destination); }
+      finally { await unlink(temporary).catch(() => {}); }
+    },
+    writeBinary: async (relative, bytes, mtime) => {
+      await folder(path.posix.dirname(relative));
+      const destination = await resolve(relative);
+      const temporary = await writeTemporary(destination, bytes);
       try {
-        handle = await open(reservation, 'wx', 0o600);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-        throw error;
-      }
-      try {
-        // Keep the claim even after capture cleanup, so a deleted ID cannot be reused.
-        await handle.sync();
+        if (sha256(await readFile(temporary)) !== sha256(bytes)) throw new Error('Image write verification failed.');
+        if (mtime !== undefined) await utimes(temporary, new Date(), new Date(mtime));
+        // A hard link publishes the complete file without overwriting a late arrival.
+        await link(temporary, destination);
       } finally {
-        await handle.close();
-      }
-      return true;
-    },
-    exists: p => vault.adapter.exists(p),
-    read: p => vault.adapter.read(p),
-    readBinary: async p => new Uint8Array(await vault.adapter.readBinary(p)),
-    mkdir: folder,
-    write: async (p, text) => {
-      if (p.startsWith('.image-ledger/')) return durableHiddenWrite(p, text);
-      const file = vault.getAbstractFileByPath(p);
-      if (file instanceof TFile) {
-        if (await vault.read(file) !== text) await vault.modify(file, text);
-      } else {
-        await vault.create(p, text);
+        await unlink(temporary).catch(() => {});
       }
     },
-    process: async (p, update) => {
-      const file = vault.getAbstractFileByPath(p);
-      if (!(file instanceof TFile)) throw new Error(`Image record no longer exists: ${p}`);
-      await vault.process(file, update);
-    },
-    writeBinary: async (p, bytes, mtime) => {
-      if (p.startsWith('.image-ledger/')) return durableHiddenWrite(p, bytes);
-      if (await vault.adapter.exists(p)) {
-        throw new Error(`Refusing to overwrite existing image: ${p}`);
-      }
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      const temporary = `${p}.${randomUUID()}.tmp`;
-      if (await vault.adapter.exists(temporary)) {
-        throw new Error(`Refusing to overwrite existing temporary image: ${temporary}`);
-      }
+    replaceBinary: async (relative, checksum, bytes) => {
+      const destination = await resolve(relative);
+      if (sha256(await readFile(destination)) !== checksum) throw new Error('The image changed before its description could be saved.');
+      const temporary = await writeTemporary(destination, bytes);
       try {
-        const file = await vault.createBinary(temporary, buffer, mtime ? {mtime} : undefined);
-        if (!Buffer.from(await vault.readBinary(file)).equals(bytes)) {
-          throw new Error('Image write verification failed. The capture is still staged for recovery.');
-        }
-        if (await vault.adapter.exists(p)) {
-          throw new Error(`Refusing to overwrite existing image: ${p}`);
-        }
-        await vault.rename(file, p);
-      } catch (error) {
-        try {
-          const file = vault.getAbstractFileByPath(temporary);
-          if (file instanceof TFile) await vault.delete(file);
-          else if (await vault.adapter.exists(temporary)) await vault.adapter.remove(temporary);
-        } catch {
-          // Keep the original write error if cleanup also fails.
-        }
-        throw error;
+        if (sha256(await readFile(temporary)) !== sha256(bytes)) throw new Error('Image write verification failed.');
+        await resolve(relative);
+        if (sha256(await readFile(destination)) !== checksum) throw new Error('The image changed during its description save.');
+        await rename(temporary, destination);
+      } finally {
+        await unlink(temporary).catch(() => {});
       }
     },
-    remove: async p => {
-      const match = /^\.image-ledger\/(staging|operations)\/([^/]+)\.(json|jpg|png)$/.exec(p);
-      if (!match || !isImageId(match[2]) || (match[1] === 'operations' && match[3] !== 'json')) {
-        throw new Error('Only staging files and image save receipts may be removed automatically.');
-      }
-      try {
-        await unlink(resolve(p));
-      } catch (error) {
+    remove: async relative => {
+      hidden(relative);
+      try { await unlink(await resolve(relative)); }
+      catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     },
-    trash: async p => {
+    trash: async relative => {
       checkTrash();
-      const destination = resolve(p);
-      const file = vault.getAbstractFileByPath(p);
-      if (!(file instanceof TFile)) throw new Error(`File unavailable for Trash: ${p}`);
-      const [root, actual] = await Promise.all([realpath(basePath), realpath(destination)]);
-      if (!actual.startsWith(root + path.sep)) throw new Error(`Refusing to trash a file outside this vault: ${p}`);
+      const destination = await resolve(relative);
+      const file = vault.getAbstractFileByPath(relative);
+      if (!(file instanceof TFile) || !(await realpath(destination)).startsWith((await root) + path.sep)) {
+        throw new Error('The image is unavailable for recoverable Trash.');
+      }
       checkTrash();
       await fileManager.trashFile(file);
     },
-    recordPaths: async () => vault.getMarkdownFiles()
-      .filter(file => /(?:^|\/)image-records\/[^/]+\.md$/.test(file.path))
-      .map(file => file.path),
-    mediaPaths: async () => vault.getFiles().filter(file => /\.(?:jpg|png|xmp)$/.test(file.path)).map(file => file.path),
-    pendingPaths: async () => await vault.adapter.exists('.image-ledger/staging')
-      ? (await vault.adapter.list('.image-ledger/staging')).files
-      : [],
-    operationPaths: async () => await vault.adapter.exists('.image-ledger/operations')
-      ? (await vault.adapter.list('.image-ledger/operations')).files.filter(file => file.endsWith('.json'))
-      : [],
+    mediaPaths: async () => vault.getFiles().filter(file => /\.(?:jpg|png)$/.test(file.path)).map(file => file.path),
+    pendingPaths: () => list('.image-ledger/staging'),
+    operationPaths: async () => (await list('.image-ledger/operations')).filter(file => file.endsWith('.json')),
   };
 }

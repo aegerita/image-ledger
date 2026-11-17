@@ -1,44 +1,14 @@
 export type ImageFormat = 'jpg' | 'png';
-export type CaptureTimeStatus = 'source_offset' | 'timezone_unknown' | 'missing_from_received_file';
 
-export interface ImageMetadata {
-  capturedAt: string | null;
-  captureTimeRaw: string | null;
-  captureTimeOffset: string | null;
-  captureTimeStatus: CaptureTimeStatus;
-  width: number | null;
-  height: number | null;
-  orientation: number | null;
-  cameraMake: string | null;
-  cameraModel: string | null;
-  latitude?: number;
-  longitude?: number;
-  altitude?: number;
-  warning?: string;
-}
-
-export interface ImageRecord {
-  schemaVersion: 2;
+/** A catalog entry rebuilt from the image, never persisted as a separate record. */
+export interface ManagedImage {
   id: string;
-  description: string;
-  captionStatus: 'confirmed' | 'pending';
   imagePath: string;
-  recordPath: string;
-  sidecarPath: string;
-  sourceName: string | null;
-  sourceLastModified: number | null;
-  ingestMethod: 'clipboard' | 'drop' | 'file';
-  importedAt: string;
-  sourceNotes: string[];
-  sha256: string;
-  bytes: number;
-  format: ImageFormat;
-  metadata: ImageMetadata;
+  description: string;
+  checksum?: string;
 }
 
 export interface MediaInput {
   bytes: Uint8Array;
-  name?: string;
   lastModified?: number;
-  method: ImageRecord['ingestMethod'];
 }

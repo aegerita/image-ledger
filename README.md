@@ -1,74 +1,42 @@
 # Image Ledger for Obsidian
 
-Save JPEG and PNG images in your notes, describe them, and find them again in an image library. Image Ledger keeps local copies with the metadata it receives. Any Markdown note works; no journal setup is needed.
+Paste, drop, or import JPEG and PNG images into notes. Image Ledger embeds the description in the image and names the file by a hash that stays stable through description edits. Export by copying the image files.
 
-Requires desktop Obsidian 1.10 or later. Tested on macOS. This is an early development build; earlier experimental formats are not migrated.
+Requires desktop Obsidian 1.10 or later and [ExifTool](https://exiftool.org/install.html) 13.58 or 13.63. Tested on macOS. The vault filesystem must support hard links and atomic renames.
 
 ## Install
 
-Install manually from [GitHub Releases](https://github.com/aegerita/image-ledger/releases).
+1. Install or extract a supported ExifTool version in a permanent location. Run its `exiftool -ver` command to check the version. If you extract the source archive, keep its `lib` folder alongside the executable.
+2. From [GitHub Releases](https://github.com/aegerita/image-ledger/releases), copy `main.js`, `manifest.json`, and `styles.css` to `.obsidian/plugins/image-ledger/` in your vault. For a source build, see [development setup](CONTRIBUTING.md#development-setup).
+3. Enable **Image Ledger** in **Settings → Community plugins**. In **Image Ledger → ExifTool executable**, enter the absolute path to ExifTool and reload the plugin. The default `exiftool` works when Obsidian can find that command on its `PATH`.
+4. Disable other plugins that handle image paste or drop to avoid conflicts.
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the release assets.
-2. Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/plugins/image-ledger/` folder. Create that folder if needed.
-3. Reload Obsidian and enable **Image Ledger** in **Settings → Community plugins**.
-4. Disable any other plugin that handles image pastes, so only one plugin handles each image.
+Update the three plugin files together. Existing vaults from the earlier record-based format need a separate migration. Their image embeds still work, but their short IDs and UUIDs are outside the new picker and deduplication catalog. Finish any old interrupted operations with the previous build and keep the old records and sidecars until their descriptions have been migrated.
 
-`.obsidian` is the hidden settings folder inside your vault. Enable **Bases** under **Settings → Core plugins** to browse the image library.
+## Add and describe images
 
-To update, replace those three files with the files from a newer release and reload the plugin. To build from source, see [development setup](CONTRIBUTING.md#development-setup); use a generated test vault for development builds.
+1. Open a note. Paste or drop a JPEG/PNG, or run **Image Ledger: Import JPEG or PNG**.
+2. Enter a description and choose **Save description**, or choose **Describe later** to keep the image with its current metadata.
+3. Run **Open image library** to browse and open images. Search by embedded description, ID, or path.
 
-## Add your first image
+**Known issue:** macOS can block Obsidian from reading photos copied from an iPhone through Universal Clipboard. Copy the photo again and paste promptly, or AirDrop a JPEG or PNG and import it.
 
-1. Open a note. Paste or drop a JPEG/PNG, or run **Image Ledger: Import JPEG or PNG** from the command palette.
-2. Write a short description, such as “Whiteboard sketch from the planning meeting,” and select **Save description**.
-3. Your note gets the image and an **Image details** link. Run **Image Ledger: Open image library** to browse descriptions, dates, and links back to your notes in Bases.
+**Edit image description** opens the dialog for a managed image under the cursor or an open image file. Elsewhere it opens a picker, scoped to the note's images when available. It is also available in the managed image file menu and on inline embeds in Source or Live Preview. The description is stored as the default `XMP-dc:Description` value. The Markdown embed keeps the alt text it received at insertion.
 
-Choose **Describe later** to keep the image without finishing its description. Run **Image Ledger: Edit image description** later, or edit `description` in the library. This updates generated image descriptions in your notes; custom alt text stays as you wrote it.
+## Storage and export
 
-In an editor, place the cursor inside a managed image's Markdown embed and run **Edit image description** to edit it directly. Elsewhere in the note, the command lists that note's images; if there are none, it lists all images. An open image or image record still opens its description directly. The picker shows thumbnails, source notes and IDs, newest imports first. Search by description, ID or note; the count shows when only the first 100 matches are displayed.
+Images go in `images/`, or in `<year>/images/` if you choose a year-based layout. Their names use a 64-character normalized SHA-256 hash. Imports with matching identity reuse the existing image. An existing description wins when you reimport another copy. Description changes keep the filename and all note links.
 
-**Image Ledger: Edit image description** is also added to file menus for managed images and their record notes. Source and Live Preview editor menus include it when the editor selection is inside a managed Markdown image embed. Ordinary text and unmanaged images get no added item. Reading View has no editor-menu integration; use the command or the image/record file menu. Native right-click delivery and targeting on rendered images remain unverified; current checks invoke the menu handlers through Obsidian's API. Wiki and reference-style embeds are not supported by cursor lookup.
+Copy the image files or the entire image folder to export them. The images contain their descriptions and received photo metadata. The filename is a deduplication ID, so use a separate file checksum to verify a transfer. The hash stays stable through description edits and across the supported ExifTool versions. Recompression or other metadata edits can produce a different ID.
 
-Description saves report updated embeds and skipped references, including customized alt text, wiki embeds without alt text, and missing notes. Choose **Review skipped embeds** in the notice to inspect them and explicitly overwrite an individual single-line inline Markdown embed. Multiline and reference-style embeds are reported but cannot be overwritten. Notes with paths that cannot be stored in image records (for example, names containing brackets) are reported and left unchanged. Copied references found through Obsidian's link index are added to the record; indexing may take a moment after a note changes. **Always keep alt text in sync with the description** in settings overwrites custom alt text on generated-form embeds during future saves; it is off by default.
+The plugin changes the saved copy's bytes when embedding a description and verifies that the encoded image, EXIF and color profile survive. Source files remain intact. Clipboard conversion can remove GPS or capture dates before Obsidian receives the file. Import the original JPEG or PNG when that metadata matters. A file copy carries embedded photo dates. Filesystem timestamps depend on how you copy it.
 
-Interrupted description saves resume when the plugin starts again. If a source note changed independently, Image Ledger preserves your edits and reports an unresolved save instead of guessing which text to replace. That image remains blocked until its save can recover; unrelated images can still be imported and edited. Run **Check image records** to find unfinished saves.
+## Delete and recover
 
-## Delete an image
+**Delete image everywhere...** previews the image and affected notes. It removes supported Markdown embeds and sends the file to Obsidian's recoverable Trash. Set **Deleted files** to system Trash or the vault `.trash` folder. Resolve blockers such as wiki embeds, ordinary links, or unsaved conflicting edits before confirming. Removing an embed by hand leaves the image file in place.
 
-Right-click a managed image's Markdown embed in Source or Live Preview, or its image/record file, and choose **Image Ledger: Delete image everywhere...**. The editor menu uses the selection inside the embed. The same command is available from the command palette, with the same image picker as description editing.
+**Recover interrupted image captures** resumes from the original source note. **Check managed images** lists pending descriptions, unreadable images and unfinished operations. An interrupted deletion resumes when the plugin reloads. If a note or file changed, the receipt stays available for inspection.
 
-The confirmation shows the image, each affected note and embed count, managed image/XMP/record files, and any staged copies to cancel. **Cancel** has initial focus. Confirming removes Markdown embeds (including custom alt text, multiline and reference-style embeds) and exact generated **Image details** links, preserving surrounding note text. Files go through Obsidian's **Deleted files** setting; choose system Trash or the vault `.trash` folder. Permanent deletion and managed paths pointing outside the vault are refused. Removing one embed manually still keeps the saved image.
+Image Ledger runs locally. Exported files can include GPS or other metadata already present in the image. Any vault sync or backup policy is managed by your own service.
 
-Deletion scans Markdown notes, including open editors and copied embeds. Wiki embeds, ordinary links to the image/record, property links, and indexed references outside Markdown block deletion; resolve the listed references first. HTML embeds and unindexed references in other file formats are outside this check. Save or reload affected notes with unsaved or conflicting edits before deleting. If notes, records or managed files change while the preview is open, reopen it before deleting.
-
-Interrupted deletions resume on startup. Conflicting note edits retain the recovery receipt and remaining files; **Check image records** reports the unfinished operation. Deleted IDs stay reserved. Restoring deleted files from Trash does not restore their note embeds or reactivate their catalog entry; the audit flags restored files as orphans. A deliberate new import gets a new ID.
-
-Deletion affects this vault only. Original source files, Git history, backup snapshots, remote copies and independently owned photo libraries are excluded. Native right-click delivery remains unverified; menu handlers and confirmation controls are tested through Obsidian's API.
-
-## Where your images go
-
-New images get a 12-character lowercase hexadecimal ID, such as `7f3a9c2d8e10`. By default, the image goes in `images/`, its metadata note in `image-records/`, and its matching `.xmp` metadata file beside the image. Existing UUID filenames and links stay unchanged. Open `image-library.base` to browse the library in Obsidian.
-
-In **Settings → Image Ledger**, **Image storage** can group new files by import year or by the year in a note's name or folder. Existing images stay in place. You can also turn off paste/drop handling or the **Image details** link.
-
-Adding the exact same image file again reuses the saved copy, even from another note. Removing an image from a note or deleting a note does not delete its saved file. Avoid renaming generated files or editing the generated record text; change descriptions through the library or plugin command.
-
-## Privacy and limits
-
-Image Ledger makes no network requests and provides no upload, AI descriptions, or independent backup. Your vault's sync service may still copy its files; configure exclusions in that service if needed.
-
-Record notes keep capture and camera fields, decimal GPS latitude/longitude and altitude in metres when available, plus a compact `image-ledger` data block for index rebuilding and recovery. Face regions and other raw metadata are excluded. Older records remain readable; saving them keeps these GPS fields and drops the raw metadata block.
-
-Received image bytes stay unchanged, including any embedded GPS or other metadata. Clipboard images may already have lost original metadata; use **Import JPEG or PNG** with the original file when that matters. HEIC and Live Photo videos are not supported. Source files are never deleted.
-
-## If something goes wrong
-
-- **A description is unfinished:** run **Edit image description**.
-- **An import was interrupted:** run **Recover interrupted image captures**. The plugin retains staged files until capture finishes.
-- **An image seems missing:** run **Check image records** for a report listing missing image paths, pending descriptions, interrupted captures, unreadable capture receipts, and unfinished image operations. The report stays open until dismissed. It does not change files or attempt recovery, and remains available when recovery is blocked.
-
-For development and testing, see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-[MIT](LICENSE). Bundled EXIF parsing uses [exifr](https://github.com/MikeKovarik/exifr); Markdown lookup uses [Lezer](https://code.haverbeke.berlin/lezer/markdown). Both are MIT-licensed.
+[Developer setup](CONTRIBUTING.md) · [Verification](TESTING.md) · [MIT license](LICENSE)

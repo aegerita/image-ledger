@@ -7,7 +7,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createTestVault, markerName, sourceNote, otherNote } from '../scripts/test-vault';
-import { extractMetadata, sha256 } from '../src/images/media';
+import { sha256 } from '../src/images/media';
+import { readExif } from './exif';
 
 test('test vault contains only synthetic inputs, isolated settings and the current build', async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), 'image-ledger-setup-'));
@@ -18,8 +19,10 @@ test('test vault contains only synthetic inputs, isolated settings and the curre
     const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
     assert.deepEqual(Object.keys(marker.fixtures).sort(), ['sample-exif.jpg', 'sample.png']);
     for (const [file, hash] of Object.entries(marker.fixtures)) assert.equal(sha256(await readFile(path.join(vault, 'fixtures', file))), hash);
-    const metadata = await extractMetadata(await readFile(path.join(vault, 'fixtures/sample-exif.jpg')));
-    assert.equal(metadata.capturedAt, '2026-10-17T12:34:56.0074-04:00');
+    const metadata = await readExif(await readFile(path.join(vault, 'fixtures/sample-exif.jpg')));
+    assert.equal(metadata?.DateTimeOriginal, '2026:10:17 12:34:56');
+    assert.equal(metadata?.SubSecTimeOriginal, '0074');
+    assert.equal(metadata?.OffsetTimeOriginal, '-04:00');
     for (const file of ['main.js', 'manifest.json', 'styles.css']) assert.deepEqual(await readFile(path.join(vault, '.obsidian/plugins/image-ledger', file)), await readFile(new URL(`../${file}`, import.meta.url)));
     for (const note of [sourceNote, otherNote]) assert.match(await readFile(path.join(vault, note), 'utf8'), /Only generated fixtures/);
   } finally { await rm(parent, {recursive: true, force: true}); }

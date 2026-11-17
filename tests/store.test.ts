@@ -18,7 +18,7 @@ async function importImage(f: ReturnType<typeof storageFixture>, bytes: Uint8Arr
 test('capture stores one hash-named image with embedded description and no permanent record files', async () => {
   const f = storageFixture();
   const image = await importImage(f);
-  assert.equal(image.id, sha256(JPEG));
+  assert.equal(image.id, `v2-${sha256(JPEG)}`);
   assert.equal(image.imagePath, `images/${image.id}.jpg`);
   assert.equal(await codec.readDescription(f.files.get(image.imagePath)!), 'A synthetic image');
   assert.deepEqual([...f.files.keys()], [image.imagePath]);
@@ -38,6 +38,52 @@ test('description edits and reimporting an exported copy reuse the same normaliz
     await f.store.complete(pending);
   }
   assert.deepEqual([...f.files.keys()], [image.imagePath]);
+});
+
+const legacyId = '1'.repeat(64);
+const legacyPath = `images/${legacyId}.jpg`;
+
+test('existing legacy paths are preserved through caption edits and reimports', async () => {
+  const f = storageFixture();
+  f.files.set(legacyPath, await codec.describe(JPEG, 'Legacy caption'));
+  await f.store.refresh();
+  assert.equal(f.store.allRecords()[0].imagePath, legacyPath);
+  const edited = await f.store.setDescription(await f.store.load(legacyPath), 'Updated legacy caption');
+  const exported = f.files.get(legacyPath)!;
+  assert.equal(edited.id, legacyId);
+  for (const bytes of [JPEG, exported]) {
+    const imported = await importImage(f, bytes, null);
+    assert.equal(imported.imagePath, legacyPath);
+    assert.equal(imported.description, 'Updated legacy caption');
+  }
+});
+
+test('legacy metadata errors preserve deletion while rejecting that path as a capture destination', async () => {
+  const f = storageFixture();
+  const malformed = Buffer.concat([JPEG, Buffer.from('Unrecognized legacy metadata')]);
+  function checkLegacyMetadata(bytes: Uint8Array) {
+    if (sha256(bytes) === sha256(malformed)) throw new Error('Cannot identify legacy metadata');
+  }
+  const store = new MediaStore(f.io, DEFAULTS, {
+    ...codec,
+    identity: async bytes => {
+      checkLegacyMetadata(bytes);
+      return codec.identity(bytes);
+    },
+    inspect: async bytes => {
+      checkLegacyMetadata(bytes);
+      return codec.inspect(bytes);
+    },
+  });
+  f.files.set(legacyPath, malformed);
+  const pending = await store.stage({bytes: JPEG}, 'Note.md');
+  pending.version = 2;
+  pending.imagePath = legacyPath;
+  await assert.rejects(store.prepare(pending), /destination/);
+  delete pending.imagePath;
+  assert.equal((await store.prepare(pending)).duplicate, false);
+  await store.deleteImage(await store.load(legacyPath), {}, async () => {});
+  assert.deepEqual(f.trashed, [legacyPath]);
 });
 
 test('fresh stores rebuild their catalog from image metadata', async () => {
@@ -223,12 +269,42 @@ test('interrupted cleanup can recover from the committed image when staged bytes
 test('damaged payloads and forged destinations retain their receipts and cannot overwrite another image', async () => {
   const f = storageFixture();
   const pending = await f.store.stage({bytes: JPEG}, 'Note.md');
-  pending.imagePath = `images/${'a'.repeat(64)}.jpg`;
-  f.files.set(pending.transactionPath, Buffer.from(JSON.stringify(pending)));
-  await assert.rejects(f.store.prepare(pending), /destination/);
+  for (const path of [legacyPath, `images/v2-${'a'.repeat(64)}.jpg`]) {
+    pending.imagePath = path;
+    await f.io.write(pending.transactionPath, JSON.stringify(pending));
+    await assert.rejects(f.store.prepare(pending), /destination/);
+  }
   f.files.set(pending.dataPath, PNG);
   assert.deepEqual(await f.store.pendingCaptures(), []);
   assert(f.files.has(pending.transactionPath));
+});
+
+test('legacy capture recovery retains a committed path and retargets an uncommitted missing path safely', async () => {
+  const f = storageFixture();
+  const pending = await f.store.stage({bytes: JPEG}, 'Note.md');
+  pending.version = 2;
+  pending.imagePath = legacyPath;
+  await f.io.write(pending.transactionPath, JSON.stringify(pending));
+  const [uncommitted] = await f.store.pendingCaptures();
+  const fresh = await f.store.prepare(uncommitted);
+  assert.equal(fresh.record.imagePath, `images/v2-${sha256(JPEG)}.jpg`);
+
+  const saved = await codec.describe(JPEG, 'Legacy saved caption');
+  f.files.set(legacyPath, saved);
+  pending.savedChecksum = sha256(saved);
+  await f.io.write(pending.transactionPath, JSON.stringify(pending));
+  const [committed] = await f.store.pendingCaptures();
+  assert.equal((await f.store.prepare(committed)).record.imagePath, legacyPath);
+  f.files.delete(legacyPath);
+  await assert.rejects(f.store.prepare(committed), /restore the missing legacy image/i);
+  assert(f.files.has(committed.transactionPath));
+  f.files.set(legacyPath, saved);
+  await f.io.remove(committed.dataPath);
+  const [cleanup] = await f.store.pendingCaptures();
+  const recovered = await f.store.describe(await f.store.prepare(cleanup), null);
+  assert.equal(recovered.imagePath, legacyPath);
+  await f.store.complete(cleanup);
+  assert.deepEqual([...f.files.keys()], [legacyPath]);
 });
 
 test('year layout and source-note renames retain pinned recovery destinations', async () => {
@@ -287,6 +363,27 @@ test('deletion rejects pending captures, changed assets and tampered prose proje
   await f.store.setDescription(image, 'New caption');
   await assert.rejects(f.store.deleteImage(image, {}, async () => {}), /changed during deletion/);
   assert(f.files.has(image.imagePath));
+});
+
+test('legacy deletion receipts block reimports and resume when the image is already in Trash', async () => {
+  const f = storageFixture();
+  f.files.set(legacyPath, JPEG);
+  const image = await f.store.load(legacyPath);
+  const pending = await f.store.stage({bytes: JPEG}, 'Other.md');
+  await assert.rejects(f.store.deleteImage(image, {}, async () => {}), /pending captures/);
+  await f.store.complete(pending);
+
+  const receipt = operationPath(legacyId);
+  await f.io.write(receipt, JSON.stringify({version: 2, image, notes: {}}));
+  const staged = await f.store.stage({bytes: JPEG}, 'Other.md');
+  await assert.rejects(f.store.prepare(staged), /unfinished deletion/);
+  f.files.set(legacyPath, await codec.describe(JPEG, 'Changed checksum'));
+  await assert.rejects(f.store.prepare(staged), /changed legacy image/);
+  await f.io.trash(legacyPath);
+  await assert.rejects(f.store.prepare(staged), /missing or changed legacy image/);
+  await f.store.recoverDeletions(async () => {});
+  assert.equal(f.files.has(receipt), false);
+  assert.match((await f.store.prepare(staged)).record.id, /^v2-/);
 });
 
 test('a failed staging write leaves an auditable receipt for the incomplete capture', async () => {

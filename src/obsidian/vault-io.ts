@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assertVaultPath } from '../images/markdown';
 import { sha256 } from '../images/media';
+import { operationImageId } from '../images/operations';
 import { CATALOG_CACHE_PATH, type VaultIO } from '../images/store';
 
 export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'trashFile'>): VaultIO {
@@ -61,7 +62,7 @@ export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'tras
 
   const hidden = (relative: string) => {
     if (relative === CATALOG_CACHE_PATH) return;
-    if (!/^\.image-ledger\/(?:staging\/[a-f0-9-]{36}\.(?:json|jpg|png)|operations\/[a-f0-9]{64}\.json)$/.test(relative)) {
+    if (!operationImageId(relative) && !/^\.image-ledger\/staging\/[a-f0-9-]{36}\.(?:json|jpg|png)$/.test(relative)) {
       throw new Error('Only current staging files, deletion receipts, and the catalog cache may be changed automatically.');
     }
   };

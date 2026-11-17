@@ -7,7 +7,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { sha256 } from '../src/images/media';
-import { createDescriptionCodec, SUPPORTED_EXIFTOOL_VERSIONS } from '../src/images/description';
+import { createDescriptionCodec } from '../src/images/description';
 import { markdownEmbed } from '../src/images/markdown';
 import { createTestVault, markerName, sourceNote, otherNote } from './test-vault';
 import { PNG, jpegWithExif } from '../tests/fixtures';
@@ -150,7 +150,7 @@ export async function validateFinalVault(vault: string, artifacts: Record<string
   assert.ok(!files.some(file => /(?:^|\/)image-records\/|\.xmp$|(?:^|\/)image-library\.base$/i.test(file)), 'Record, sidecar, or Bases file created');
   const images = files.filter(file => /(?:^|\/)images\/[^/]+\.(jpg|png)$/.test(file));
   assert.equal(images.length, 2, 'Expected exactly two managed payloads');
-  for (const image of images) assert.match(path.posix.basename(image), /^[0-9a-f]{64}\.(jpg|png)$/, `Invalid managed filename: ${image}`);
+  for (const image of images) assert.match(path.posix.basename(image), /^v2-[0-9a-f]{64}\.(jpg|png)$/, `Invalid managed filename: ${image}`);
   const marker = JSON.parse(await readFile(path.join(vault, markerName), 'utf8'));
   assert.equal(marker.version, 1);
   const codec = createDescriptionCodec(exiftoolPath);
@@ -212,10 +212,10 @@ async function runSmoke(): Promise<void> {
   }, timeoutMs);
   try {
     const executable = process.env.EXIFTOOL;
-    assert.ok(executable && path.isAbsolute(executable), 'Set EXIFTOOL to the absolute path of a supported ExifTool executable');
+    assert.ok(executable && path.isAbsolute(executable), 'Set EXIFTOOL to the absolute path of an ExifTool executable');
     const executablePath = await realpath(executable);
     const version = (await runCommand(executablePath, ['-config', '', '-ver'], deadline)).trim();
-    assert.ok(SUPPORTED_EXIFTOOL_VERSIONS.includes(version), `Smoke requires ExifTool ${SUPPORTED_EXIFTOOL_VERSIONS.join(' or ')}`);
+    assert.match(version, /^\d+\.\d+$/, 'Could not verify the ExifTool version');
     const exiftool = {path: executablePath, sha256: sha256(await readFile(executablePath))};
     await runCommand('npm', ['run', 'build'], deadline, {cwd: repo, timeoutMs: 30_000});
     vault = await realpath(await createTestVault(undefined, executablePath));

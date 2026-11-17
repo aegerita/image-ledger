@@ -1,7 +1,8 @@
 import type { ManagedImage } from './model';
 import { assertVaultPath } from './markdown';
 import { deletionProjection } from './embeds';
-import { isManagedPath } from './ids';
+import { posix } from 'node:path';
+import { isImageId, isManagedPath, isSha256 } from './ids';
 
 export interface EmbedRange {
   from: number;
@@ -26,14 +27,19 @@ export function operationPath(id: string): string {
   return `.image-ledger/operations/${id}.json`;
 }
 
+export function operationImageId(file: string): string | undefined {
+  const id = posix.basename(file, '.json');
+  if (isImageId(id) && operationPath(id) === file) return id;
+}
+
 /** Recompute approved edits before trusting a writable recovery receipt. */
 export function parseOperation(text: string, file: string): DeletionOperation {
   try {
     const operation = JSON.parse(text) as DeletionOperation;
     const image = operation.image;
     if (operation.version !== 2 || !image || !isManagedPath(image.imagePath)
-      || image.id !== image.imagePath.split('/').pop()!.split('.')[0]
-      || !/^[a-f0-9]{64}$/.test(image.checksum ?? '')
+      || image.id !== posix.parse(image.imagePath).name
+      || !isSha256(image.checksum)
       || typeof image.description !== 'string'
       || file !== operationPath(image.id)) throw new Error();
     assertVaultPath(image.imagePath);

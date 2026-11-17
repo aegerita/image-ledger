@@ -4,8 +4,8 @@ import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { App, TFile } from 'obsidian';
-import { createDescriptionCodec, SUPPORTED_EXIFTOOL_VERSIONS } from '../src/images/description';
-import { sha256 } from '../src/images/media';
+import { createDescriptionCodec } from '../src/images/description';
+import { imageIdentity } from '../src/images/identity';
 import { CATALOG_CACHE_PATH, MediaStore } from '../src/images/store';
 import { jpegWithExif } from '../tests/fixtures';
 import { loadHostModules } from '../tests/host-modules';
@@ -13,23 +13,23 @@ import { createTestVault } from './test-vault';
 
 const run = promisify(execFile);
 const imageCount = 2_000;
-const caption = 'Image Ledger fingerprint prototype';
+const caption = 'Synthetic benchmark caption';
 
 async function createImages(root: string, executable: string): Promise<string[]> {
   const seed = path.join(root, '.benchmark-seed');
-  const normalized = path.join(root, '.benchmark-normalized');
+  const tagged = path.join(root, '.benchmark-tagged');
   const images = path.join(root, 'images');
-  for (const folder of [seed, normalized, images]) await mkdir(folder);
+  for (const folder of [seed, tagged, images]) await mkdir(folder);
   for (let index = 0; index < imageCount; index++) {
     await writeFile(path.join(seed, `${index}.jpg`), jpegWithExif({subsecond: String(index).padStart(4, '0')}));
   }
-  // Batch the codec's current fingerprint recipe to generate valid filenames without one subprocess per fixture.
+  // Write fixture captions in one subprocess.
   await run(executable, ['-config', '', `-XMP-dc:Description-x-default=${caption}`,
-    '-XMP-x:XMPToolkit=Image::ExifTool 13.58', '-o', normalized, seed], {timeout: 30_000});
+    '-o', tagged, seed], {timeout: 30_000});
   const paths: string[] = [];
-  for (const name of await readdir(normalized)) {
-    const source = path.join(normalized, name);
-    const imagePath = `images/${sha256(await readFile(source))}.jpg`;
+  for (const name of await readdir(tagged)) {
+    const source = path.join(tagged, name);
+    const imagePath = `images/${await imageIdentity(await readFile(source))}.jpg`;
     await rename(source, path.join(root, imagePath));
     paths.push(imagePath);
   }
@@ -85,6 +85,7 @@ async function benchmark(root: string, executable: string, version: string): Pro
           return bytes;
         },
       }, {storageLayout: 'flat'}, {
+        identity: codec.identity,
         readDescription: bytes => {
           metrics.captionReads++;
           return codec.readDescription(bytes);
@@ -128,7 +129,7 @@ async function benchmark(root: string, executable: string, version: string): Pro
       }, id));
       assert.equal(phases[phase].imageReads, 2, phase);
       assert.equal(phases[phase].captionReads, 0, phase);
-      assert.equal(phases[phase].inspections, 2, phase);
+      assert.equal(phases[phase].inspections, 1, phase);
       assert.equal(phases[phase].captionWrites, 1, phase);
       assert.equal(await codec.readDescription(await readFile(path.join(root, imagePath))), description);
     }
@@ -147,7 +148,7 @@ function counters() {
 const executable = process.env.EXIFTOOL;
 assert.ok(executable && path.isAbsolute(executable), 'Set EXIFTOOL to an absolute executable path');
 const version = (await run(executable, ['-config', '', '-ver'], {timeout: 5_000})).stdout.trim();
-assert.ok(SUPPORTED_EXIFTOOL_VERSIONS.includes(version), `Unsupported ExifTool ${version}`);
+assert.match(version, /^\d+\.\d+$/, 'Could not verify the ExifTool version');
 const root = await createTestVault(undefined, executable);
 console.error(`Generated benchmark vault: ${root}`);
 await benchmark(root, executable, version);

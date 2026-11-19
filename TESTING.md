@@ -1,12 +1,12 @@
 # Testing Image Ledger
 
-Use ExifTool 13.58 or 13.63. Set `EXIFTOOL` to its absolute executable path for the codec tests and host runner.
+Set `EXIFTOOL` to an absolute ExifTool executable path for the codec tests and host runner. Set `EXIFTOOL_ALTERNATE` to a different release for the cross-version round trip.
 
 ```sh
 EXIFTOOL=/absolute/path/to/exiftool npm test
 ```
 
-This type-checks and builds the plugin, then tests image validation, caption readback and add/edit/remove, export/reimport identity, metadata preservation, duplicate capture, guarded replacement, restart recovery, embed handling, and recoverable deletion. Without a supported executable, the codec integration tests may skip. CI runs those checks with ExifTool 13.58.
+This type-checks and builds the plugin, then tests image validation, caption readback and add/edit/remove, export/reimport identity, metadata preservation, duplicate capture, guarded replacement, restart recovery, embed handling, and recoverable deletion. Without ExifTool, codec integration tests may skip. CI tests ExifTool 13.58 and exchanges exported images with 13.50.
 
 ## Obsidian host test
 

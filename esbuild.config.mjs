@@ -1,6 +1,6 @@
 import esbuild from 'esbuild';
 import { readFile } from 'node:fs/promises';
-const licenses = await Promise.all(['@lezer/markdown', '@lezer/common', '@lezer/highlight'].map(async name => {
+const licenses = await Promise.all(['@lezer/markdown', '@lezer/common', '@lezer/highlight', '@xmldom/xmldom'].map(async name => {
   const license = await readFile(new URL(`./node_modules/${name}/LICENSE`, import.meta.url), 'utf8');
   return `/*! Bundled ${name} license:\n${license}\n*/`;
 }));

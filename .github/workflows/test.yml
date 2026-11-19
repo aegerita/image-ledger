@@ -19,10 +19,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Set up ExifTool 13.58
+      - name: Set up ExifTool 13.58 and 13.50
         run: |
           curl --fail --location --silent --show-error --output "$RUNNER_TEMP/exiftool.tar.gz" https://codeload.github.com/exiftool/exiftool/tar.gz/refs/tags/13.58
           echo "34f8e52f5b11806eba1174601bf38801508d4f05f3fef2265b3ce8e1079007b5  $RUNNER_TEMP/exiftool.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/exiftool.tar.gz" -C "$RUNNER_TEMP"
           echo "EXIFTOOL=$RUNNER_TEMP/exiftool-13.58/exiftool" >> "$GITHUB_ENV"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/exiftool-alternate.tar.gz" https://codeload.github.com/exiftool/exiftool/tar.gz/refs/tags/13.50
+          echo "f392ec4f5471d0bc5d4de20ab23efe61392eb6e09e780781b9407e2eb95ad31e  $RUNNER_TEMP/exiftool-alternate.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/exiftool-alternate.tar.gz" -C "$RUNNER_TEMP"
+          echo "EXIFTOOL_ALTERNATE=$RUNNER_TEMP/exiftool-13.50/exiftool" >> "$GITHUB_ENV"
       - run: npm test

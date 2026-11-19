@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Vault } from 'obsidian';
 import { loadHostModules } from './host-modules';
 import { sha256 } from '../src/images/media';
+import { operationPath } from '../src/images/operations';
 import { PNG } from './fixtures';
 
 const {createVaultIO, TFile, FileSystemAdapter} = await loadHostModules();
@@ -36,14 +37,26 @@ test('concurrent file publication accepts one writer and leaves a complete image
   assert.equal((await readdir(join(f.root, 'images'))).length, 1);
 });
 
-test('caption file replacement verifies the exact original bytes and leaves no temporary files', async t => {
+test('caption file replacement preserves dates, verifies original bytes, and leaves no temporary files', async t => {
   const f = await fixture(t);
+  const destination = join(f.root, imagePath);
   await f.io.writeBinary(imagePath, PNG, 12345);
-  assert.equal((await stat(join(f.root, imagePath))).mtimeMs, 12345);
+  assert.equal((await stat(destination)).mtimeMs, 12345);
+  const modified = new Date(67890);
+  await utimes(destination, modified, modified);
+  const original = await stat(destination, {bigint: true});
+  if (process.platform === 'darwin') assert.notEqual(original.birthtimeNs, original.mtimeNs);
+
   const updated = Buffer.concat([PNG, Buffer.from('updated')]);
   await f.io.replaceBinary(imagePath, sha256(PNG), updated);
+  const saved = await stat(destination, {bigint: true});
+  assert.notEqual(saved.ino, original.ino);
+  assert.ok(Math.abs(Number(saved.mtimeNs - original.mtimeNs)) < 1000, 'Modification date changed');
+  if (process.platform === 'darwin') {
+    assert.ok(Math.abs(Number(saved.birthtimeNs - original.birthtimeNs)) < 1000, 'Creation date changed');
+  }
   await assert.rejects(f.io.replaceBinary(imagePath, sha256(PNG), PNG), /changed/);
-  assert.deepEqual(await readFile(join(f.root, imagePath)), updated);
+  assert.deepEqual(await readFile(destination), updated);
   assert.equal((await readdir(join(f.root, 'images'))).length, 1);
 });
 
@@ -79,6 +92,13 @@ test('receipts are writable and removable only in their allowed hidden paths', a
   await assert.rejects(f.io.write('Note.md', 'changed'), /Only current staging/);
   await f.io.remove(staging);
   assert.deepEqual(await f.io.pendingPaths(), []);
+  for (const id of ['a'.repeat(64), 'b'.repeat(64)]) {
+    const receipt = operationPath(id);
+    await f.io.write(receipt, '{}');
+    assert.deepEqual(await f.io.operationPaths(), [receipt]);
+    await f.io.remove(receipt);
+  }
+  await assert.rejects(f.io.write(operationPath(`v3-${'a'.repeat(64)}`), '{}'), /Only current staging/);
 });
 
 test('vault writes and removals reject traversal and symlinked destinations', async t => {

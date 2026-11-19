@@ -19,14 +19,17 @@ npm test
 | --- | --- |
 | `src/main.ts` | Plugin startup, commands, and event registration. |
 | `src/captures.ts` | Capture batching, description prompts, and recovery on a shared queue. |
-| `src/images/description.ts` | ExifTool metadata reads, verified writes, and normalized hashing. |
+| `src/images/description.ts` | ExifTool caption reads and verified writes. |
+| `src/images/identity.ts`, `xmp.ts` | Versioned JPEG/PNG identity and XMP normalization. |
 | `src/images/store.ts` | Catalog from image filenames, deduplication, staging, and deletion recovery. |
 | `src/images/markdown.ts`, `embeds.ts` | Relative embeds and Lezer-based reference parsing. |
 | `src/obsidian/notes.ts`, `anchors.ts` | Tracked editor insertion, recovery, and guarded note edits. |
 | `src/obsidian/library.ts`, `ui.ts` | Image picker, context menus, descriptions, deletion preview, and settings. |
 | `src/obsidian/vault-io.ts` | Vault path validation, atomic image publication and replacement, and Trash. |
 
-The normalized ID hashes a temporary copy with a fixed default XMP description and the `Image::ExifTool 13.58` toolkit marker. This preserves IDs across the supported ExifTool versions. Changing either fixed value requires an explicit migration. Saved images use the installed writer's normal toolkit marker. The codec runs with bounded subprocess calls in private temporary directories and verifies description readback, normalized identity, encoded image data, EXIF, ICC and the second embedded image before returning new bytes.
+The v2 ID hashes the encoded image and metadata without invoking ExifTool. It normalizes XMP packet layout, the default description, the toolkit marker, PNG text and EXIF chunk placement, and JPEG MPF offsets affected by caption length. It includes alternate-language captions, EXIF, ICC, and all trailing images. Treat the hash format as permanent. The codec uses bounded ExifTool calls in private temporary directories and checks caption readback and v2 identity before returning new bytes.
+
+Both filename generations use bare SHA-256 hex. A filename that differs from the current digest can still serve as a path alias. Capture compares the current identity from file bytes and verifies a duplicate before reusing its path. A temporary cache avoids rereading unchanged candidates. Edits and deletion receipts use the actual file checksum.
 
 Capture stages received bytes, computes the identity and checks for an existing image, then saves the image before inserting the embed. Its temporary receipt records the original note and the verified image path. Finish note insertion before clearing staging. Note renames retarget pending captures, and interrupted cleanup can reuse the committed image.
 

@@ -1,11 +1,37 @@
 import { FileSystemAdapter, TFile, type FileManager, type Vault } from 'obsidian';
+import { execFile } from 'node:child_process';
 import { lstat, link, mkdir, open, readFile, readdir, realpath, rename, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
 import { assertVaultPath } from '../images/markdown';
 import { sha256 } from '../images/media';
 import { operationImageId } from '../images/operations';
 import { CATALOG_CACHE_PATH, type VaultIO } from '../images/store';
+
+const execute = promisify(execFile);
+// Foundation can set a creation date on the replacement before publication.
+const copyFinderDates = `
+ObjC.import('Foundation');
+function run(paths) {
+  var manager = $.NSFileManager.defaultManager;
+  var dates = manager.attributesOfItemAtPathError(paths[0], null);
+  if (dates.isNil()) throw new Error('Could not read original file dates');
+  // Set creation last because an earlier modification date can move creation backward.
+  for (var key of [$.NSFileModificationDate, $.NSFileCreationDate]) {
+    var change = $.NSDictionary.dictionaryWithObjectForKey(dates.objectForKey(key), key);
+    if (!manager.setAttributesOfItemAtPathError(change, paths[1], null)) {
+      throw new Error('Could not set replacement file dates');
+    }
+  }
+}
+`;
+
+function sameTimestamp(before: bigint, after: bigint): boolean {
+  // The OS date APIs can round sub-microsecond precision.
+  const difference = after - before;
+  return difference > -1000n && difference < 1000n;
+}
 
 export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'trashFile'>): VaultIO {
   if (!(vault.adapter instanceof FileSystemAdapter)) throw new Error('Image Ledger requires a desktop filesystem vault.');
@@ -133,6 +159,23 @@ export function createVaultIO(vault: Vault, fileManager: Pick<FileManager, 'tras
       const temporary = await writeTemporary(destination, bytes);
       try {
         if (sha256(await readFile(temporary)) !== sha256(bytes)) throw new Error('Image write verification failed.');
+        await resolve(relative);
+        const original = await lstat(destination, {bigint: true});
+        const macOS = process.platform === 'darwin';
+        try {
+          if (macOS) {
+            await execute('/usr/bin/osascript', ['-l', 'JavaScript', '-e', copyFinderDates, destination, temporary], {timeout: 5_000});
+          } else {
+            await utimes(temporary, Number(original.atimeNs) / 1e9, Number(original.mtimeNs) / 1e9);
+          }
+          const replacement = await lstat(temporary, {bigint: true});
+          if (!sameTimestamp(original.mtimeNs, replacement.mtimeNs)
+            || (macOS && !sameTimestamp(original.birthtimeNs, replacement.birthtimeNs))) {
+            throw new Error('Replacement dates differ from the original');
+          }
+        } catch (error) {
+          throw new Error('Could not preserve the image’s file dates. The description was not saved.', {cause: error});
+        }
         await resolve(relative);
         if (sha256(await readFile(destination)) !== checksum) throw new Error('The image changed during its description save.');
         await rename(temporary, destination);

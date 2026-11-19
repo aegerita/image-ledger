@@ -23,6 +23,8 @@ Update the three plugin files together. Existing vaults from the earlier record-
 
 **Edit image description** opens the dialog for a managed image under the cursor or an open image file. Elsewhere it opens a picker, scoped to the note's images when available. It is also available in the managed image file menu and on inline embeds in Source or Live Preview. Saving updates the default `XMP-dc:Description` in the same image file and updates matching inline embed alt text. Image Ledger leaves custom labels and reference-style embeds alone and reports skips or conflicts.
 
+Description saves preserve the file’s modification date and, on macOS, its Finder creation date. Image Ledger keeps the original file if the replacement cannot preserve those dates.
+
 ## Storage and export
 
 Images go in `images/`, or in `<year>/images/` if you choose a year-based layout. New filenames use 64 lowercase hexadecimal characters from a SHA-256 hash. Imports with matching image data and metadata reuse the existing image and its description. Description edits keep the filename and note links. Images with earlier 64-character filenames keep their paths and work with edits, reimports, and recovery.

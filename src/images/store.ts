@@ -57,7 +57,7 @@ export interface ImageAudit {
 const STATE_DIR = '.image-ledger/staging';
 export const CATALOG_CACHE_PATH = '.image-ledger/catalog-cache.json';
 const CATALOG_CACHE_VERSION = 1;
-type CaptionEntry = {stamp: string; checksum: string; description: string};
+type CaptionEntry = {stamp: string; checksum: string; description: string; identity?: string | null};
 type RemoveEmbeds = (image: ManagedImage, notes: DeletionNotes) => Promise<void>;
 
 export function storageFolder(sourcePath: string, importedAt: Date, layout: StorageLayout): string {
@@ -71,7 +71,7 @@ export function storageFolder(sourcePath: string, importedAt: Date, layout: Stor
 
 export class MediaStore {
   private records = new Map<string, ManagedImage>();
-  private legacyIdentities = new Map<string, {stamp: string; identity: string}>();
+  private identities = new Map<string, string[]>();
   private captions?: Map<string, CaptionEntry>;
   private cacheDirty = false;
   private serial: Promise<unknown> = Promise.resolve();
@@ -102,7 +102,8 @@ export class MediaStore {
           const entry = value as Partial<CaptionEntry> | null;
           if (isManagedPath(path) && typeof entry?.stamp === 'string'
             && isSha256(entry.checksum) && typeof entry.description === 'string') {
-            captions.set(path, {stamp: entry.stamp, checksum: entry.checksum, description: entry.description});
+            const identity = entry.identity === null || isSha256(entry.identity) ? entry.identity : undefined;
+            captions.set(path, {stamp: entry.stamp, checksum: entry.checksum, description: entry.description, identity});
           }
         }
         return captions;
@@ -113,35 +114,50 @@ export class MediaStore {
     return new Map();
   }
 
-  private async refreshCatalog(verify = false): Promise<ImageAudit['issues']> {
+  private async refreshCatalog(verify = false, paths?: Set<string>): Promise<ImageAudit['issues']> {
     const captions = this.captions ??= await this.readCaptionCache();
-    const paths = new Set(await this.io.mediaPaths());
+    paths ??= new Set(await this.io.mediaPaths());
     for (const image of this.records.values()) paths.add(image.imagePath);
     const next = new Map<string, ManagedImage>();
     const nextCaptions = new Map<string, CaptionEntry>();
+    const nextIdentities = new Map<string, string[]>();
     const issues: ImageAudit['issues'] = [];
     for (const imagePath of paths) {
       if (!isManagedPath(imagePath)) continue;
       try {
         const stamp = await this.io.stat(imagePath);
         if (stamp === undefined) continue;
-        const id = posix.parse(imagePath).name;
-        if (next.has(id)) throw new Error('Multiple image paths use the same normalized ID. Resolve the duplicate files.');
         const cached = captions.get(imagePath);
-        let entry: CaptionEntry;
-        if (!verify && cached?.stamp === stamp) {
-          entry = cached;
-        } else {
+        let entry = cached;
+        let identity = cached?.identity;
+        if (verify || cached?.stamp !== stamp || identity === undefined) {
           const bytes = await this.io.readBinary(imagePath);
           const checksum = sha256(bytes);
-          const description = cached?.checksum === checksum ? cached.description : await this.codec.readDescription(bytes);
+          identity = await this.codec.identity(bytes).catch(() => null);
+          let captionError: unknown;
+          entry = undefined;
+          try {
+            const description = cached?.checksum === checksum ? cached.description : await this.codec.readDescription(bytes);
+            entry = {stamp, checksum, description, identity};
+          } catch (error) {
+            captionError = error;
+          }
           if (await this.io.stat(imagePath) !== stamp) throw new Error('The image changed while its description was being read.');
-          entry = {stamp, checksum, description};
-          if (cached?.stamp !== stamp || cached.checksum !== checksum) {
+          if (!entry) {
+            issues.push({path: imagePath, reason: String(captionError)});
+          } else if (cached?.stamp !== stamp || cached.checksum !== checksum || cached.identity !== identity) {
             this.cacheDirty = true;
           }
         }
+        if (identity) {
+          const matches = nextIdentities.get(identity);
+          if (matches) matches.push(imagePath);
+          else nextIdentities.set(identity, [imagePath]);
+        }
+        if (!entry) continue;
         nextCaptions.set(imagePath, entry);
+        const id = posix.parse(imagePath).name;
+        if (next.has(id)) throw new Error('Multiple image paths use the same normalized ID. Resolve the duplicate files.');
         next.set(id, {id, imagePath, description: entry.description});
       } catch (error) {
         issues.push({path: imagePath, reason: String(error)});
@@ -149,9 +165,7 @@ export class MediaStore {
     }
     this.records = next;
     this.captions = nextCaptions;
-    for (const path of this.legacyIdentities.keys()) {
-      if (!nextCaptions.has(path)) this.legacyIdentities.delete(path);
-    }
+    this.identities = nextIdentities;
     if (this.cacheDirty || nextCaptions.size !== captions.size) {
       try {
         await this.io.write(CATALOG_CACHE_PATH, JSON.stringify({
@@ -186,22 +200,6 @@ export class MediaStore {
       description = await this.codec.readDescription(bytes);
     }
     return {id, imagePath, description, checksum: sha256(bytes)};
-  }
-
-  private async legacyIdentity(imagePath: string): Promise<string | undefined> {
-    try {
-      const stamp = await this.io.stat(imagePath);
-      if (stamp === undefined) return;
-      const cached = this.legacyIdentities.get(imagePath);
-      if (cached?.stamp === stamp) return cached.identity;
-      const identity = await this.codec.identity(await this.io.readBinary(imagePath));
-      if (await this.io.stat(imagePath) !== stamp) return;
-      this.legacyIdentities.set(imagePath, {stamp, identity});
-      return identity;
-    } catch {
-      // Older imports can contain metadata that the canonical reader cannot interpret.
-      return;
-    }
   }
 
   async stage(input: MediaInput, sourcePath: string): Promise<PendingCapture> {
@@ -245,13 +243,14 @@ export class MediaStore {
       if (cached) candidates.add(cached.imagePath);
       candidates.add(destination);
       if (pinned) candidates.add(pinned);
+      await this.refreshCatalog(false, candidates);
       const existing: string[] = [];
       for (const candidate of candidates) {
         if (!isManagedPath(candidate)) continue;
         const {name, ext} = posix.parse(candidate);
         if (name === identity && await this.io.exists(candidate)) {
           existing.push(candidate);
-        } else if (ext === `.${pending.format}` && await this.legacyIdentity(candidate) === identity) {
+        } else if (ext === `.${pending.format}` && this.identities.get(identity)?.includes(candidate)) {
           existing.push(candidate);
         }
       }
@@ -264,7 +263,15 @@ export class MediaStore {
       }
       if (existing.length > 1) throw new Error('Multiple image paths use the same normalized ID. Resolve the duplicate files.');
       const imagePath = existing[0] ?? destination;
-      const match = existing.length ? await this.load(imagePath, identity) : undefined;
+      let match: ManagedImage | undefined;
+      if (existing.length) {
+        const entry = this.captions?.get(imagePath);
+        if (entry?.identity === identity && posix.extname(imagePath) === `.${pending.format}`) {
+          match = {id: posix.parse(imagePath).name, imagePath, description: entry.description, checksum: entry.checksum};
+        } else {
+          match = await this.load(imagePath, identity);
+        }
+      }
       pending.imagePath = imagePath;
       await this.io.write(pending.transactionPath, JSON.stringify(pending));
       if (match) return {pending, record: match, identity, duplicate: true};

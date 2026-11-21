@@ -5,7 +5,7 @@ import { sha256 } from '../src/images/media';
 import { deletionProjection } from '../src/images/embeds';
 import { operationPath, parseOperation, type DeletionNotes } from '../src/images/operations';
 import { DEFAULTS } from '../src/settings';
-import { JPEG, PNG } from './fixtures';
+import { JPEG, PNG, jpegWithExif } from './fixtures';
 import { codec, storageFixture } from './storage-fixture';
 
 async function importImage(f: ReturnType<typeof storageFixture>, bytes: Uint8Array = JPEG, description: string | null = 'A synthetic image') {
@@ -21,7 +21,7 @@ test('capture stores one hash-named image with embedded description and no perma
   assert.equal(image.id, `${sha256(JPEG)}`);
   assert.equal(image.imagePath, `images/${image.id}.jpg`);
   assert.equal(await codec.readDescription(f.files.get(image.imagePath)!), 'A synthetic image');
-  assert.deepEqual([...f.files.keys()], [image.imagePath]);
+  assert.deepEqual([...f.files.keys()].filter(path => path !== CATALOG_CACHE_PATH), [image.imagePath]);
 });
 
 test('description edits and reimporting an exported copy reuse the same normalized identity', async () => {
@@ -37,7 +37,7 @@ test('description edits and reimporting an exported copy reuse the same normaliz
     assert.equal((await f.store.describe(prepared, null)).description, 'Updated caption');
     await f.store.complete(pending);
   }
-  assert.deepEqual([...f.files.keys()], [image.imagePath]);
+  assert.deepEqual([...f.files.keys()].filter(path => path !== CATALOG_CACHE_PATH), [image.imagePath]);
 });
 
 const legacyId = '1'.repeat(64);
@@ -61,12 +61,14 @@ test('existing legacy paths are preserved through caption edits and reimports', 
 test('legacy metadata errors preserve deletion while rejecting that path as a capture destination', async () => {
   const f = storageFixture();
   const malformed = Buffer.concat([JPEG, Buffer.from('Unrecognized legacy metadata')]);
+  let identityCalls = 0;
   function checkLegacyMetadata(bytes: Uint8Array) {
     if (sha256(bytes) === sha256(malformed)) throw new Error('Cannot identify legacy metadata');
   }
   const store = new MediaStore(f.io, DEFAULTS, {
     ...codec,
     identity: async bytes => {
+      identityCalls++;
       checkLegacyMetadata(bytes);
       return codec.identity(bytes);
     },
@@ -82,6 +84,9 @@ test('legacy metadata errors preserve deletion while rejecting that path as a ca
   await assert.rejects(store.prepare(pending), /destination/);
   delete pending.imagePath;
   assert.equal((await store.prepare(pending)).duplicate, false);
+  assert.equal(identityCalls, 1);
+  const cache = JSON.parse(await f.io.read(CATALOG_CACHE_PATH));
+  assert.equal(cache.entries[legacyPath].identity, null);
   await store.deleteImage(await store.load(legacyPath), {}, async () => {});
   assert.deepEqual(f.trashed, [legacyPath]);
 });
@@ -100,26 +105,124 @@ function cachedStorageFixture() {
   const {io} = fixture;
   const imageReads: string[] = [];
   const captions: string[] = [];
+  const identities: string[] = [];
   const originalReadBinary = io.readBinary;
   io.readBinary = async path => {
     if (path.startsWith('images/') || path.includes('/images/')) imageReads.push(path);
     return originalReadBinary(path);
   };
+  const identify = async (bytes: Uint8Array) => {
+    const identity = await codec.identity(bytes);
+    identities.push(identity);
+    return identity;
+  };
   const trackedCodec = {
     ...codec,
+    identity: identify,
+    inspect: async (bytes: Uint8Array) => ({id: await identify(bytes), description: await codec.readDescription(bytes)}),
     readDescription: async (bytes: Uint8Array) => {
       const description = await codec.readDescription(bytes);
       captions.push(description);
       return description;
     },
   };
-  return {...fixture, imageReads, captions, open: () => new MediaStore(io, DEFAULTS, trackedCodec)};
+  return {...fixture, imageReads, captions, identities, open: () => new MediaStore(io, DEFAULTS, trackedCodec)};
 }
+
+test('preparing a new JPEG after restart identifies only the incoming image', async () => {
+  const f = cachedStorageFixture();
+  await importImage(f);
+  await f.open().refresh();
+  f.imageReads.length = 0;
+  f.identities.length = 0;
+
+  const restarted = f.open();
+  const incoming = jpegWithExif({subsecond: '1234'});
+  const pending = await restarted.stage({bytes: incoming}, 'Other.md');
+  const prepared = await restarted.prepare(pending);
+  assert.equal(prepared.duplicate, false);
+  assert.deepEqual(f.imageReads, []);
+  assert.deepEqual(f.identities, [await codec.identity(incoming)]);
+});
+
+test('preparing a legacy duplicate after restart uses the cache and verifies it before saving', async () => {
+  const f = cachedStorageFixture();
+  f.files.set(legacyPath, await codec.describe(JPEG, 'Legacy caption'));
+  await f.open().refresh();
+  f.imageReads.length = 0;
+  f.identities.length = 0;
+
+  const restarted = f.open();
+  const pending = await restarted.stage({bytes: JPEG}, 'Other.md');
+  const prepared = await restarted.prepare(pending);
+  assert.equal(prepared.duplicate, true);
+  assert.equal(prepared.record.imagePath, legacyPath);
+  assert.equal(prepared.record.description, 'Legacy caption');
+  assert.deepEqual(f.imageReads, []);
+  assert.deepEqual(f.identities, [await codec.identity(JPEG)]);
+
+  const replacement = jpegWithExif({subsecond: '1234'});
+  f.files.set(legacyPath, replacement);
+  await assert.rejects(restarted.describe(prepared, null), /different identity/);
+  assert.equal(f.files.get(legacyPath), replacement);
+  assert(f.files.has(pending.dataPath));
+});
+
+test('catalogs with legacy filenames still reject multiple paths with the same identity', async () => {
+  const f = storageFixture();
+  f.files.set(legacyPath, JPEG);
+  f.files.set(`2027/${legacyPath}`, JPEG);
+  const pending = await f.store.stage({bytes: JPEG}, 'Other.md');
+  await assert.rejects(f.store.prepare(pending), /Multiple image paths use the same normalized ID/);
+});
+
+test('a failed catalog caption read still allows matching a legacy image by identity', async () => {
+  const f = storageFixture();
+  f.files.set(legacyPath, JPEG);
+  const store = new MediaStore(f.io, DEFAULTS, {
+    ...codec,
+    readDescription: async () => { throw new Error('Caption read failed'); },
+  });
+  const pending = await store.stage({bytes: JPEG}, 'Other.md');
+  const prepared = await store.prepare(pending);
+  assert.equal(prepared.duplicate, true);
+  assert.equal(prepared.record.imagePath, legacyPath);
+});
+
+test('a cached identity cannot bypass the format check for a hash-named image', async () => {
+  const f = storageFixture();
+  const imagePath = `images/${await codec.identity(JPEG)}.png`;
+  f.files.set(imagePath, JPEG);
+  await f.store.refresh();
+  const pending = await f.store.stage({bytes: JPEG}, 'Other.md');
+  await assert.rejects(f.store.prepare(pending), /format does not match/);
+});
+
+test('a cache without identities is upgraded in one read per image without rereading captions', async () => {
+  const f = cachedStorageFixture();
+  const photo = await importImage(f, JPEG, 'Original');
+  const diagram = await importImage(f, PNG, 'Diagram');
+  await f.open().refresh();
+  const saved = JSON.parse(await f.io.read(CATALOG_CACHE_PATH));
+  const legacy = JSON.parse(JSON.stringify(saved));
+  for (const path of [photo.imagePath, diagram.imagePath]) delete legacy.entries[path].identity;
+  await f.io.write(CATALOG_CACHE_PATH, JSON.stringify(legacy));
+  f.imageReads.length = 0;
+  f.captions.length = 0;
+  f.identities.length = 0;
+
+  await f.open().refresh();
+  assert.deepEqual(f.imageReads, [photo.imagePath, diagram.imagePath]);
+  assert.deepEqual(f.captions, []);
+  assert.deepEqual(f.identities, [photo.id, diagram.id]);
+  assert.deepEqual(JSON.parse(await f.io.read(CATALOG_CACHE_PATH)), saved);
+});
 
 test('catalog refresh and restart reuse unchanged captions and read only changed image paths', async () => {
   const f = cachedStorageFixture();
   const photo = await importImage(f, JPEG, 'Original');
   const diagram = await importImage(f, PNG, 'Diagram');
+  await f.io.remove(CATALOG_CACHE_PATH);
   f.imageReads.length = 0;
 
   const cold = f.open();
@@ -263,7 +366,7 @@ test('interrupted cleanup can recover from the committed image when staged bytes
   const prepared = await restarted.prepare(recovered);
   assert.equal(prepared.record.description, image.description);
   await restarted.complete(recovered);
-  assert.deepEqual([...f.files.keys()], [image.imagePath]);
+  assert.deepEqual([...f.files.keys()].filter(path => path !== CATALOG_CACHE_PATH), [image.imagePath]);
 });
 
 test('damaged payloads and forged destinations retain their receipts and cannot overwrite another image', async () => {
@@ -291,6 +394,7 @@ test('legacy capture recovery retains a committed path and retargets an uncommit
 
   const saved = await codec.describe(JPEG, 'Legacy saved caption');
   f.files.set(legacyPath, saved);
+  f.io.mediaPaths = async () => [];
   pending.savedChecksum = sha256(saved);
   await f.io.write(pending.transactionPath, JSON.stringify(pending));
   const [committed] = await f.store.pendingCaptures();
@@ -304,7 +408,7 @@ test('legacy capture recovery retains a committed path and retargets an uncommit
   const recovered = await f.store.describe(await f.store.prepare(cleanup), null);
   assert.equal(recovered.imagePath, legacyPath);
   await f.store.complete(cleanup);
-  assert.deepEqual([...f.files.keys()], [legacyPath]);
+  assert.deepEqual([...f.files.keys()].filter(path => path !== CATALOG_CACHE_PATH), [legacyPath]);
 });
 
 test('year layout and source-note renames retain pinned recovery destinations', async () => {
@@ -408,5 +512,5 @@ test('deduplication refreshes the embed target after an image moved while the ca
   await f.store.describe(prepared, null);
   assert.equal(f.store.allRecords()[0].imagePath, moved);
   await f.store.complete(pending);
-  assert.deepEqual([...f.files.keys()], [moved]);
+  assert.deepEqual([...f.files.keys()].filter(path => path !== CATALOG_CACHE_PATH), [moved]);
 });

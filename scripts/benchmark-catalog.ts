@@ -9,7 +9,7 @@ import { imageIdentity } from '../src/images/identity';
 import { CATALOG_CACHE_PATH, MediaStore } from '../src/images/store';
 import { jpegWithExif } from '../tests/fixtures';
 import { loadHostModules } from '../tests/host-modules';
-import { createTestVault } from './test-vault';
+import { createTestVault, sourceNote } from './test-vault';
 
 const run = promisify(execFile);
 const imageCount = 2_000;
@@ -85,7 +85,10 @@ async function benchmark(root: string, executable: string, version: string): Pro
           return bytes;
         },
       }, {storageLayout: 'flat'}, {
-        identity: codec.identity,
+        identity: bytes => {
+          metrics.identityComputations++;
+          return codec.identity(bytes);
+        },
         readDescription: bytes => {
           metrics.captionReads++;
           return codec.readDescription(bytes);
@@ -108,6 +111,17 @@ async function benchmark(root: string, executable: string, version: string): Pro
     assert.equal(phases.coldStart.imageReads, imageCount);
     assert.equal(phases.coldStart.captionReads, imageCount);
 
+    const cachePath = path.join(root, CATALOG_CACHE_PATH);
+    const oldCache = JSON.parse(await readFile(cachePath, 'utf8')) as {entries: Record<string, {identity?: string | null}>};
+    for (const entry of Object.values(oldCache.entries)) delete entry.identity;
+    await writeFile(cachePath, JSON.stringify(oldCache));
+    const upgraded = openCatalog();
+    await measure('cacheUpgrade', () => upgraded.ready());
+    assert.equal(upgraded.store.allRecords().length, imageCount);
+    assert.equal(phases.cacheUpgrade.imageReads, imageCount);
+    assert.equal(phases.cacheUpgrade.identityComputations, imageCount);
+    assert.equal(phases.cacheUpgrade.captionReads, 0);
+
     const warm = openCatalog();
     await measure('warmStart', () => warm.ready());
     assert.equal(warm.store.allRecords().length, imageCount);
@@ -117,6 +131,17 @@ async function benchmark(root: string, executable: string, version: string): Pro
       assert.equal(phases[phase].imageReads, 0, phase);
       assert.equal(phases[phase].captionReads, 0, phase);
     }
+
+    const incoming = jpegWithExif({subsecond: String(imageCount)});
+    await measure('capture', async () => {
+      const pending = await warm.store.stage({bytes: incoming}, sourceNote);
+      const prepared = await warm.store.prepare(pending);
+      assert.equal(prepared.duplicate, false);
+      await warm.store.complete(pending);
+    });
+    assert.equal(phases.capture.imageReads, 1);
+    assert.equal(phases.capture.identityComputations, 0);
+    assert.equal(phases.capture.inspections, 1);
 
     for (const [index, imagePath] of paths.slice(0, 3).entries()) {
       const phase = `edit${index + 1}`;
@@ -142,7 +167,10 @@ async function benchmark(root: string, executable: string, version: string): Pro
 }
 
 function counters() {
-  return {cacheReads: 0, imageReads: 0, imageBytes: 0, captionReads: 0, inspections: 0, captionWrites: 0};
+  return {
+    cacheReads: 0, imageReads: 0, imageBytes: 0, identityComputations: 0,
+    captionReads: 0, inspections: 0, captionWrites: 0,
+  };
 }
 
 const executable = process.env.EXIFTOOL;

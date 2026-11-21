@@ -221,7 +221,7 @@ export class MediaSettings extends PluginSettingTab {
         }));
     new Setting(containerEl)
       .setName('ExifTool executable')
-      .setDesc('Requires ExifTool 13.58 or 13.63. The default searches PATH and standard Homebrew locations. For a different install, enter its absolute path and reload the plugin.')
+      .setDesc('The default searches PATH and standard Homebrew locations. For a different ExifTool install, enter its absolute path and reload the plugin.')
       .addText(text => text
         .setPlaceholder('/absolute/path/to/exiftool')
         .setValue(this.plugin.settings.exiftoolPath)

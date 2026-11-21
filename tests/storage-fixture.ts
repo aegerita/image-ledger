@@ -13,9 +13,10 @@ function unpack(bytes: Uint8Array) {
 
 export const codec: DescriptionCodec = {
   readDescription: async bytes => unpack(bytes).description,
+  identity: async bytes => `${sha256(unpack(bytes).base)}`,
   inspect: async bytes => {
     const {base, description} = unpack(bytes);
-    return {id: sha256(base), description};
+    return {id: `${sha256(base)}`, description};
   },
   describe: async (bytes, description) => Buffer.concat([unpack(bytes).base, marker, Buffer.from(description)]),
 };

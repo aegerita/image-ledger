@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 import { detectImageFormat, sha256 } from './media';
 import { assertVaultPath, normalizeDescription } from './markdown';
-import { isImageId, isManagedPath } from './ids';
+import { isManagedPath, isSha256 } from './ids';
+import { UnreadableImageError } from './identity';
 import type { DescriptionCodec } from './description';
 import type { ImageFormat, ManagedImage, MediaInput } from './model';
 import type { StorageLayout } from '../settings';
-import { operationPath, parseOperation, type DeletionNotes } from './operations';
+import { operationImageId, operationPath, parseOperation, type DeletionNotes } from './operations';
 
 export interface VaultIO {
   checkTrash(): void;
@@ -25,7 +26,7 @@ export interface VaultIO {
 }
 
 export interface PendingCapture {
-  version: 2;
+  version: 2 | 3;
   id: string;
   dataPath: string;
   transactionPath: string;
@@ -41,6 +42,7 @@ export interface PendingCapture {
 export interface PreparedCapture {
   pending: PendingCapture;
   record: ManagedImage;
+  identity: string;
   duplicate: boolean;
   preview?: Uint8Array;
 }
@@ -69,6 +71,7 @@ export function storageFolder(sourcePath: string, importedAt: Date, layout: Stor
 
 export class MediaStore {
   private records = new Map<string, ManagedImage>();
+  private legacyIdentities = new Map<string, {stamp: string; identity: string}>();
   private captions?: Map<string, CaptionEntry>;
   private cacheDirty = false;
   private serial: Promise<unknown> = Promise.resolve();
@@ -98,7 +101,7 @@ export class MediaStore {
         for (const [path, value] of Object.entries(entries)) {
           const entry = value as Partial<CaptionEntry> | null;
           if (isManagedPath(path) && typeof entry?.stamp === 'string'
-            && isImageId(entry.checksum) && typeof entry.description === 'string') {
+            && isSha256(entry.checksum) && typeof entry.description === 'string') {
             captions.set(path, {stamp: entry.stamp, checksum: entry.checksum, description: entry.description});
           }
         }
@@ -146,6 +149,9 @@ export class MediaStore {
     }
     this.records = next;
     this.captions = nextCaptions;
+    for (const path of this.legacyIdentities.keys()) {
+      if (!nextCaptions.has(path)) this.legacyIdentities.delete(path);
+    }
     if (this.cacheDirty || nextCaptions.size !== captions.size) {
       try {
         await this.io.write(CATALOG_CACHE_PATH, JSON.stringify({
@@ -160,16 +166,42 @@ export class MediaStore {
     return issues;
   }
 
-  async load(imagePath: string): Promise<ManagedImage> {
+  async load(imagePath: string, expectedIdentity?: string): Promise<ManagedImage> {
     assertVaultPath(imagePath);
     if (!isManagedPath(imagePath)) throw new Error('This is not a managed image path.');
     const bytes = await this.io.readBinary(imagePath);
     if (`.${detectImageFormat(bytes)}` !== posix.extname(imagePath)) throw new Error('The image format does not match its filename.');
-    const image = await this.codec.inspect(bytes);
-    if (image.id !== posix.parse(imagePath).name) {
-      throw new Error('The image content no longer matches its normalized filename.');
+    const id = posix.parse(imagePath).name;
+    let description: string;
+    if (expectedIdentity) {
+      const inspected = await this.codec.inspect(bytes).catch(error => {
+        if (error instanceof UnreadableImageError) {
+          throw new Error(`Can’t read the existing image’s embedded metadata. Check ${imagePath}.`, {cause: error});
+        }
+        throw error;
+      });
+      if (inspected.id !== expectedIdentity) throw new Error('The existing image has a different identity.');
+      description = inspected.description;
+    } else {
+      description = await this.codec.readDescription(bytes);
     }
-    return {...image, imagePath, checksum: sha256(bytes)};
+    return {id, imagePath, description, checksum: sha256(bytes)};
+  }
+
+  private async legacyIdentity(imagePath: string): Promise<string | undefined> {
+    try {
+      const stamp = await this.io.stat(imagePath);
+      if (stamp === undefined) return;
+      const cached = this.legacyIdentities.get(imagePath);
+      if (cached?.stamp === stamp) return cached.identity;
+      const identity = await this.codec.identity(await this.io.readBinary(imagePath));
+      if (await this.io.stat(imagePath) !== stamp) return;
+      this.legacyIdentities.set(imagePath, {stamp, identity});
+      return identity;
+    } catch {
+      // Older imports can contain metadata that the canonical reader cannot interpret.
+      return;
+    }
   }
 
   async stage(input: MediaInput, sourcePath: string): Promise<PendingCapture> {
@@ -177,7 +209,7 @@ export class MediaStore {
     const format = detectImageFormat(input.bytes);
     const id = randomUUID();
     const pending: PendingCapture = {
-      version: 2, id, format, sourcePath,
+      version: 3, id, format, sourcePath,
       dataPath: `${STATE_DIR}/${id}.${format}`, transactionPath: `${STATE_DIR}/${id}.json`,
       storageFolder: storageFolder(sourcePath, new Date(), this.settings.storageLayout),
       byteHash: sha256(input.bytes),
@@ -197,46 +229,77 @@ export class MediaStore {
   prepare(pending: PendingCapture): Promise<PreparedCapture> {
     return this.exclusive(async () => {
       const bytes = await this.stagedBytes(pending);
-      const inspected = await this.codec.inspect(bytes);
-      if (await this.io.exists(operationPath(inspected.id))) {
-        throw new Error('This image has an unfinished deletion. Resolve it before importing the image again.');
-      }
-      if (pending.imagePath && posix.parse(pending.imagePath).name !== inspected.id) {
-        throw new Error('The staged image destination does not match its normalized ID.');
+      const {id: identity, description} = await this.codec.inspect(bytes);
+      await this.checkUnfinishedDeletion(identity);
+      const pinned = pending.imagePath;
+      const pinnedId = pinned ? posix.parse(pinned).name : undefined;
+      const legacyDestination = pinnedId !== identity;
+      const destinationError = 'The staged image destination does not match its normalized ID.';
+      if (pinned && (!isManagedPath(pinned) || posix.extname(pinned) !== `.${pending.format}`)) {
+        throw new Error(destinationError);
       }
       const prefix = pending.storageFolder ? `${pending.storageFolder}/` : '';
-      const destination = pending.imagePath ?? `${prefix}images/${inspected.id}.${pending.format}`;
+      const destination = pinned && !legacyDestination ? pinned : `${prefix}images/${identity}.${pending.format}`;
       const candidates = new Set(await this.io.mediaPaths());
-      const cached = this.records.get(inspected.id);
+      const cached = this.records.get(identity);
       if (cached) candidates.add(cached.imagePath);
       candidates.add(destination);
+      if (pinned) candidates.add(pinned);
       const existing: string[] = [];
       for (const candidate of candidates) {
-        if (isManagedPath(candidate) && posix.parse(candidate).name === inspected.id && await this.io.exists(candidate)) {
+        if (!isManagedPath(candidate)) continue;
+        const {name, ext} = posix.parse(candidate);
+        if (name === identity && await this.io.exists(candidate)) {
+          existing.push(candidate);
+        } else if (ext === `.${pending.format}` && await this.legacyIdentity(candidate) === identity) {
           existing.push(candidate);
         }
       }
+      if (pinned && legacyDestination && !existing.includes(pinned)) {
+        const exists = await this.io.exists(pinned);
+        if (pending.savedChecksum && !exists) {
+          throw new Error('Restore the missing legacy image to its original path before recovering this saved capture.');
+        }
+        if (pending.version !== 2 || exists) throw new Error(destinationError);
+      }
       if (existing.length > 1) throw new Error('Multiple image paths use the same normalized ID. Resolve the duplicate files.');
       const imagePath = existing[0] ?? destination;
+      const match = existing.length ? await this.load(imagePath, identity) : undefined;
       pending.imagePath = imagePath;
       await this.io.write(pending.transactionPath, JSON.stringify(pending));
-      if (await this.io.exists(imagePath)) {
-        const record = await this.load(imagePath);
-        if (record.id !== inspected.id) throw new Error('The existing image has a different identity.');
-        return {pending, record, duplicate: true};
-      }
-      return {pending, record: {...inspected, imagePath}, duplicate: false, preview: bytes};
+      if (match) return {pending, record: match, identity, duplicate: true};
+      return {pending, record: {id: identity, description, imagePath}, identity, duplicate: false, preview: bytes};
     });
+  }
+
+  private async checkUnfinishedDeletion(identity: string): Promise<void> {
+    const interrupted = 'This image has an unfinished deletion. Resolve it before importing the image again.';
+    if (await this.io.exists(operationPath(identity))) throw new Error(interrupted);
+    for (const file of await this.io.operationPaths()) {
+      if (!isSha256(operationImageId(file))) continue;
+      const {image} = parseOperation(await this.io.read(file), file);
+      const bytes = await this.io.exists(image.imagePath) ? await this.io.readBinary(image.imagePath) : undefined;
+      if (!bytes || sha256(bytes) !== image.checksum) {
+        throw new Error('Resolve the unfinished deletion of a missing or changed legacy image before importing.');
+      }
+      const legacyIdentity = await this.codec.identity(bytes).catch(error => {
+        if (error instanceof UnreadableImageError) {
+          throw new Error('Resolve the unfinished deletion of an unreadable legacy image before importing.', {cause: error});
+        }
+        throw error;
+      });
+      if (legacyIdentity === identity) throw new Error(interrupted);
+    }
   }
 
   describe(prepared: PreparedCapture, description: string | null): Promise<ManagedImage> {
     return this.exclusive(async () => {
-      const {pending, record} = prepared;
-      if (await this.io.exists(operationPath(record.id))) throw new Error('This image has an unfinished deletion.');
+      const {pending, record, identity} = prepared;
+      await this.checkUnfinishedDeletion(identity);
       let bytes = await this.stagedBytes(pending);
       const caption = description === null ? record.description : normalizeDescription(description);
       if (await this.io.exists(record.imagePath)) {
-        const current = await this.load(record.imagePath);
+        const current = await this.load(record.imagePath, identity);
         if (!prepared.duplicate) return this.checkpointCapture(pending, current);
         if (current.checksum !== record.checksum) throw new Error('The image changed while its description dialog was open.');
         if (description === null || caption === current.description) return this.checkpointCapture(pending, current);
@@ -269,7 +332,9 @@ export class MediaStore {
     if (!image.checksum) throw new Error('Reload the image before editing its description.');
     const before = await this.io.readBinary(image.imagePath);
     if (sha256(before) !== image.checksum) throw new Error('The image changed. Open its description again.');
-    if ((await this.codec.inspect(before)).id !== image.id) throw new Error('Image identity changed.');
+    if (`.${detectImageFormat(before)}` !== posix.extname(image.imagePath)) {
+      throw new Error('Image identity changed.');
+    }
     const bytes = await this.codec.describe(before, description);
     await this.io.replaceBinary(image.imagePath, image.checksum, bytes);
     const saved = {...image, description, checksum: sha256(bytes)};
@@ -288,12 +353,12 @@ export class MediaStore {
       if (!file.endsWith('.json')) continue;
       try {
         const pending = JSON.parse(await this.io.read(file)) as PendingCapture;
-        if (pending.version !== 2 || !/^[a-f0-9-]{36}$/.test(pending.id)
+        if ((pending.version !== 2 && pending.version !== 3) || !/^[a-f0-9-]{36}$/.test(pending.id)
           || !['jpg', 'png'].includes(pending.format)
           || pending.transactionPath !== file || file !== `${STATE_DIR}/${pending.id}.json`
           || pending.dataPath !== `${STATE_DIR}/${pending.id}.${pending.format}`
           || !/^(?:\d{4})?$/.test(pending.storageFolder)
-          || !isImageId(pending.byteHash)
+          || !isSha256(pending.byteHash)
           || (pending.lastModified !== undefined && !Number.isFinite(pending.lastModified))) throw new Error('Invalid capture receipt');
         assertVaultPath(pending.sourcePath);
         if (!pending.sourcePath.endsWith('.md')) throw new Error('Invalid source note');
@@ -303,7 +368,7 @@ export class MediaStore {
             throw new Error('Invalid image destination');
           }
         }
-        if (pending.savedChecksum !== undefined && !isImageId(pending.savedChecksum)) throw new Error('Invalid saved checksum');
+        if (pending.savedChecksum !== undefined && !isSha256(pending.savedChecksum)) throw new Error('Invalid saved checksum');
         await this.stagedBytes(pending);
         captures.push(pending);
       } catch (error) {
@@ -342,12 +407,15 @@ export class MediaStore {
     return this.exclusive(async () => {
       this.io.checkTrash();
       if (!image.checksum) throw new Error('Reload the image before deleting it.');
-      if (!await this.io.exists(image.imagePath) || sha256(await this.io.readBinary(image.imagePath)) !== image.checksum) {
+      const bytes = await this.io.exists(image.imagePath) ? await this.io.readBinary(image.imagePath) : undefined;
+      if (!bytes || sha256(bytes) !== image.checksum) {
         throw new Error('The image changed during deletion preview. Open a fresh preview.');
       }
-      for (const pending of await this.pendingCaptures()) {
-        const bytes = await this.stagedBytes(pending);
-        if ((await this.codec.inspect(bytes)).id === image.id) {
+      const captures = await this.pendingCaptures();
+      const identity = captures.length ? await this.codec.identity(bytes).catch(() => undefined) : undefined;
+      for (const pending of captures) {
+        if (pending.imagePath === image.imagePath || pending.byteHash === image.checksum
+          || (identity && await this.codec.identity(await this.stagedBytes(pending)).catch(() => undefined) === identity)) {
           throw new Error('Finish or recover this image’s pending captures before deleting it.');
         }
       }

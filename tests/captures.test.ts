@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CaptureWorkflow } from '../src/captures';
+import { UnreadableImageError } from '../src/images/identity';
 import { JPEG, PNG } from './fixtures';
 import { storageFixture } from './storage-fixture';
 import type { ManagedImage } from '../src/images/model';
@@ -52,6 +53,29 @@ test('failed note insertion retains staging and restart recovery inserts the com
   await restarted.workflow.enqueue(async () => {});
   assert.equal(restarted.recovered()?.description, 'Caption');
   assert.deepEqual(await f.store.pendingCaptures(), []);
+});
+
+test('capture discards staging only when preparation finds unreadable metadata', async t => {
+  const cases = [
+    {method: 'prepare', error: new UnreadableImageError(new Error('Invalid XMP')), completed: 1, stagedFiles: 0},
+    {method: 'prepare', error: new Error('ExifTool failed'), completed: 0, stagedFiles: 2},
+    {method: 'describe', error: new UnreadableImageError(new Error('Invalid generated XMP')), completed: 0, stagedFiles: 2},
+  ] as const;
+  for (const {method, error, completed, stagedFiles} of cases) {
+    const f = storageFixture();
+    t.mock.method(f.store, method, async () => { throw error; });
+    const complete = t.mock.method(f.store, 'complete');
+    const {workflow, errors} = captures(f);
+    workflow.capture([file()], {
+      path: 'Note.md',
+      insert: async () => assert.fail('Failed capture must not be inserted'),
+      release: () => {},
+    }, 'clipboard');
+    await workflow.enqueue(async () => {});
+    assert.deepEqual(errors, [error]);
+    assert.equal(complete.mock.callCount(), completed);
+    assert.equal((await f.io.pendingPaths()).length, stagedFiles);
+  }
 });
 
 test('missing recovery note preserves staged data and image', async () => {

@@ -193,8 +193,19 @@ function identity(chunks: Buffer[], movableMetadata: Buffer[], xmp: string): str
   return hash.digest('hex');
 }
 
+export class UnreadableImageError extends Error {
+  constructor(cause: unknown) {
+    super('Image Ledger can’t read this image’s embedded metadata (XMP). Re-export the image without metadata, or use a different copy. Your original file was not changed.', {cause});
+    this.name = 'UnreadableImageError';
+  }
+}
+
 export async function imageIdentity(bytes: Uint8Array): Promise<string> {
   const format = detectImageFormat(bytes);
   const contents = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return format === 'png' ? pngIdentity(contents) : jpegIdentity(contents);
+  try {
+    return await (format === 'png' ? pngIdentity(contents) : jpegIdentity(contents));
+  } catch (error) {
+    throw new UnreadableImageError(error);
+  }
 }

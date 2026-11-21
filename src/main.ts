@@ -2,6 +2,7 @@ import { Plugin, Notice, type Editor, type MarkdownFileInfo } from 'obsidian';
 import { CaptureWorkflow, type CaptureMethod } from './captures';
 import { MediaStore } from './images/store';
 import { createDescriptionCodec } from './images/description';
+import { UnreadableImageError } from './images/identity';
 import type { ManagedImage } from './images/model';
 import { ImageLibrary } from './obsidian/library';
 import { NoteImages } from './obsidian/notes';
@@ -128,6 +129,7 @@ export default class ImageLedgerPlugin extends Plugin {
 
   private report(error: unknown): void {
     console.error('Image Ledger:', error);
-    new Notice(`Image Ledger: ${error instanceof Error ? error.message : String(error)}`, 12000);
+    const message = error instanceof Error ? error.message : String(error);
+    new Notice(error instanceof UnreadableImageError ? message : `Image Ledger: ${message}`, 12000);
   }
 }

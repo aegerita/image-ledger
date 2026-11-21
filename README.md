@@ -29,6 +29,8 @@ Description saves preserve the file’s modification date and, on macOS, its Fin
 
 Images go in `images/`, or in `<year>/images/` if you choose a year-based layout. New filenames use 64 lowercase hexadecimal characters from a SHA-256 hash. Imports with matching image data and metadata reuse the existing image and its description. Description edits keep the filename and note links. Images with earlier 64-character filenames keep their paths and work with edits, reimports, and recovery.
 
+If Image Ledger rejects an image because its embedded metadata is unreadable, re-export it without metadata and import it again.
+
 Image Ledger caches captions in `.image-ledger/catalog-cache.json` for faster startup and browsing. The cache uses machine-specific file metadata, so exclude it from Git and vault sync. You can remove the cache while the plugin is closed to rebuild it on startup. Captions live in the image files.
 
 Copy the image files or the entire image folder to export them. The images contain their descriptions and received photo metadata. Use a file checksum to verify a transfer. The image ID stays stable through description edits and ExifTool upgrades. Recompression or other metadata edits can produce a different ID.

@@ -76,11 +76,18 @@ function exifTiff(options: { offset?: string; subsecond?: string; gps?: boolean 
   return buffer.subarray(0, dataOffset);
 }
 
-export function jpegWithExif(options: Parameters<typeof exifTiff>[0]): Buffer {
-  const payload = Buffer.concat([Buffer.from('Exif\0\0', 'ascii'), exifTiff(options)]);
+function jpegApp1(payload: Buffer): Buffer {
   const header = Buffer.from([0xff, 0xe1, 0, 0]);
   header.writeUInt16BE(payload.length + 2, 2);
   return Buffer.concat([JPEG.subarray(0, 2), header, payload, JPEG.subarray(2)]);
+}
+
+export function jpegWithExif(options: Parameters<typeof exifTiff>[0]): Buffer {
+  return jpegApp1(Buffer.concat([Buffer.from('Exif\0\0', 'ascii'), exifTiff(options)]));
+}
+
+export function jpegWithXmp(packet: Buffer): Buffer {
+  return jpegApp1(Buffer.concat([Buffer.from('http://ns.adobe.com/xap/1.0/\0'), packet]));
 }
 
 export function pngChunk(type: string, payload: Buffer): Buffer {

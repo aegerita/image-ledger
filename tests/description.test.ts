@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createDescriptionCodec } from '../src/images/description';
-import { imageIdentity } from '../src/images/identity';
+import { imageIdentity, UnreadableImageError } from '../src/images/identity';
 import { detectImageFormat, sha256 } from '../src/images/media';
-import { ICC_PROFILE, JPEG, PNG, jpegWithExif, jpegWithIcc, jpegWithMpf, pngChunk, pngWithExif, pngWithIcc } from './fixtures';
+import { ICC_PROFILE, JPEG, PNG, jpegWithExif, jpegWithIcc, jpegWithMpf, jpegWithXmp, pngChunk, pngWithExif, pngWithIcc } from './fixtures';
 import { readExif } from './exif';
 import { storageFixture } from './storage-fixture';
 import { MediaStore } from '../src/images/store';
@@ -141,6 +141,23 @@ test('identity excludes only the main subject’s default XMP description', asyn
   assert.equal(await imageIdentity(withXmp('Edited', 'Related', 'Texte')), id);
   assert.notEqual(await imageIdentity(withXmp('Caption', 'Changed', 'Texte')), id);
   assert.notEqual(await imageIdentity(withXmp('Caption', 'Related', 'Autre texte')), id);
+});
+
+test('identity reports unreadable XMP and retains the parsing error', async () => {
+  const truncatedPngXmp = pngChunk('iTXt', Buffer.from('XML:com.adobe.xmp\0\0\0'));
+  const fixtures = [
+    jpegWithXmp(Buffer.from('<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">')),
+    jpegWithXmp(Buffer.from([0xc3, 0x28])),
+    Buffer.concat([PNG.subarray(0, -12), truncatedPngXmp, PNG.subarray(-12)]),
+  ];
+  for (const bytes of fixtures) {
+    await assert.rejects(imageIdentity(bytes), error => {
+      assert.ok(error instanceof UnreadableImageError);
+      assert.ok(error.cause instanceof Error);
+      return true;
+    });
+  }
+  await assert.rejects(imageIdentity(PNG.subarray(0, -1)), /PNG image is incomplete/);
 });
 
 test('extended JPEG XMP survives edits to the default description', integration, async () => {

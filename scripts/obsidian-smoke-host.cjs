@@ -175,6 +175,23 @@ module.exports = async (app, config) => {
     assert.equal(plugin().settings.storageLayout, 'flat');
     if (config.phase === 'main') {
       assert.equal(images().length, 0, 'Smoke vault must start empty');
+      await step('Reject a pasted JPEG with malformed XMP and clear staging', async () => {
+        const jpeg = fs.readFileSync(path.join(root, 'fixtures/sample-exif.jpg'));
+        const xmp = Buffer.from('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x="adobe:ns:meta/">');
+        const segment = Buffer.from([0xff, 0xe1, 0, 0]);
+        segment.writeUInt16BE(xmp.length + 2, 2);
+        const invalid = Buffer.concat([jpeg.subarray(0, 2), segment, xmp, jpeg.subarray(2)]);
+        const copy = '.image-ledger-smoke/malformed-xmp.jpg';
+        fs.writeFileSync(path.join(root, copy), invalid, {flag: 'wx'});
+        const before = read(source);
+        await capture(copy, source, 'clipboard');
+        await wait(() => documents().some(doc => [...doc.querySelectorAll('.notice')].some(notice =>
+          notice.textContent.includes('Re-export the image without metadata, or use a different copy.'))), 'unreadable XMP notice');
+        await wait(() => fs.readdirSync(path.join(root, '.image-ledger/staging')).length === 0, 'staging cleanup');
+        assert.equal(images().length, 0);
+        assert.equal(read(source), before);
+        assert.deepEqual(fs.readFileSync(path.join(root, copy)), invalid);
+      });
       await step('Import JPEG and save embedded description', async () => {
         await capture('fixtures/sample-exif.jpg', source, 'file');
         const input = await modal();

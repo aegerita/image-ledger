@@ -1,5 +1,6 @@
+import { UnreadableImageError } from './images/identity';
 import type { ManagedImage } from './images/model';
-import { MediaStore, type PendingCapture } from './images/store';
+import { MediaStore, type PendingCapture, type PreparedCapture } from './images/store';
 import type { CaptureTarget, NoteImages } from './obsidian/notes';
 
 export type CaptureMethod = 'clipboard' | 'drop' | 'file';
@@ -32,13 +33,18 @@ export class CaptureWorkflow {
           this.ui.report(result.reason);
           continue;
         }
+        let prepared: PreparedCapture | undefined;
         try {
           if (result.value.sourcePath !== target.path) await this.store.retarget(result.value, target.path);
-          const image = await this.describeCapture(result.value);
+          prepared = await this.store.prepare(result.value);
+          const image = await this.describeCapture(prepared);
           images.set(image.id, image);
           completed.push(result.value);
         } catch (error) {
           this.ui.report(error);
+          if (!prepared && error instanceof UnreadableImageError) {
+            await this.store.complete(result.value).catch(() => {});
+          }
         }
       }
       if (images.size) {
@@ -55,7 +61,7 @@ export class CaptureWorkflow {
       for (const capture of pending) {
         try {
           if (!this.notes.sourceNote(capture.sourcePath)) throw new Error('Restore the original note before recovering its image.');
-          const image = await this.describeCapture(capture);
+          const image = await this.describeCapture(await this.store.prepare(capture));
           await this.notes.recover(image, capture.sourcePath);
           await this.store.complete(capture);
           recovered++;
@@ -72,8 +78,7 @@ export class CaptureWorkflow {
     return this.processing;
   }
 
-  private async describeCapture(pending: PendingCapture): Promise<ManagedImage> {
-    const prepared = await this.store.prepare(pending);
+  private async describeCapture(prepared: PreparedCapture): Promise<ManagedImage> {
     const description = prepared.duplicate && prepared.record.description
       ? null : await this.ui.describe(prepared.record, prepared.preview);
     const image = await this.store.describe(prepared, description);

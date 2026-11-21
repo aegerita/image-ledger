@@ -3,6 +3,7 @@ import { posix } from 'node:path';
 import { detectImageFormat, sha256 } from './media';
 import { assertVaultPath, normalizeDescription } from './markdown';
 import { isManagedPath, isSha256 } from './ids';
+import { UnreadableImageError } from './identity';
 import type { DescriptionCodec } from './description';
 import type { ImageFormat, ManagedImage, MediaInput } from './model';
 import type { StorageLayout } from '../settings';
@@ -173,7 +174,12 @@ export class MediaStore {
     const id = posix.parse(imagePath).name;
     let description: string;
     if (expectedIdentity) {
-      const inspected = await this.codec.inspect(bytes);
+      const inspected = await this.codec.inspect(bytes).catch(error => {
+        if (error instanceof UnreadableImageError) {
+          throw new Error(`Can’t read the existing image’s embedded metadata. Check ${imagePath}.`, {cause: error});
+        }
+        throw error;
+      });
       if (inspected.id !== expectedIdentity) throw new Error('The existing image has a different identity.');
       description = inspected.description;
     } else {
@@ -276,7 +282,13 @@ export class MediaStore {
       if (!bytes || sha256(bytes) !== image.checksum) {
         throw new Error('Resolve the unfinished deletion of a missing or changed legacy image before importing.');
       }
-      if (await this.codec.identity(bytes) === identity) throw new Error(interrupted);
+      const legacyIdentity = await this.codec.identity(bytes).catch(error => {
+        if (error instanceof UnreadableImageError) {
+          throw new Error('Resolve the unfinished deletion of an unreadable legacy image before importing.', {cause: error});
+        }
+        throw error;
+      });
+      if (legacyIdentity === identity) throw new Error(interrupted);
     }
   }
 

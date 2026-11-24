@@ -207,6 +207,49 @@ test('unrelated XMP fields participate in identity and survive caption edits', i
   }
 });
 
+test('caption edits keep nested XMP order and all JPEG frames under the original identity', integration, async () => {
+  const packet = Buffer.from(`<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#">
+      <xmpMM:DerivedFrom rdf:parseType="Resource">
+        <stRef:instanceID>synthetic-instance</stRef:instanceID>
+        <stRef:documentID>synthetic-document</stRef:documentID>
+      </xmpMM:DerivedFrom>
+      <dc:description><rdf:Alt><rdf:li xml:lang="fr">Texte français</rdf:li></rdf:Alt></dc:description>
+    </rdf:Description>
+  </rdf:RDF>`);
+  const withXmp = jpegWithXmp(packet);
+  const app1 = withXmp.subarray(2, 4 + withXmp.readUInt16BE(4));
+  const mpf = jpegWithMpf();
+  const original = Buffer.concat([mpf.subarray(0, 2), app1, mpf.subarray(2)]);
+  // APP1 precedes MPF, so only the primary frame size needs updating.
+  const primarySize = original.indexOf(Buffer.from('MPF\0')) + 4 + 54;
+  original.writeUInt32LE(original.readUInt32LE(primarySize) + app1.length, primarySize);
+
+  const codec = createDescriptionCodec(executable);
+  const writer = createDescriptionCodec(alternate ?? executable);
+  const baseline = await codec.inspect(original);
+  assert.deepEqual(baseline, {id: 'a519c24e088f8f69d02a86e5c93a36a3df532f17bf1471a386ae817a316622ce', description: ''});
+  let saved: Uint8Array = original;
+  for (const description of ['Synthetic caption & <test>', 'Changed caption', '']) {
+    saved = await writer.describe(saved, description);
+    assert.deepEqual(await codec.inspect(saved), {id: baseline.id, description});
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'image-ledger-structured-xmp-'));
+  try {
+    const output = join(directory, 'saved.jpg');
+    await writeFile(output, saved);
+    const tag = (name: string) => execFileSync(executable, ['-config', '', '-b', name, output]);
+    assert.match(tag('-XMP').toString(), /<stRef:instanceID>synthetic-instance<\/stRef:instanceID>\s*<stRef:documentID>synthetic-document<\/stRef:documentID>/);
+    assert.equal(tag('-XMP-dc:Description-fr').toString(), 'Texte français');
+    assert.deepEqual(tag('-MPImage2'), JPEG);
+    assert.deepEqual(tag('-MPImage3'), JPEG);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('concurrent metadata operations keep their temporary inputs separate', integration, async () => {
   const codec = createDescriptionCodec(executable);
   const [first, second] = await Promise.all([

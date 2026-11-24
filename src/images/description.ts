@@ -5,6 +5,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { detectImageFormat } from './media';
 import { imageIdentity } from './identity';
+import { replaceDefaultXmpDescription } from './xmp';
 
 const DESCRIPTION_TAG = '-XMP-dc:Description-x-default=';
 const execute = promisify(execFile);
@@ -21,10 +22,10 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
     ? {...process.env, PATH: [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin'].filter(Boolean).join(delimiter)}
     : undefined;
 
-  async function run(...args: string[]): Promise<string> {
+  async function run(...args: string[]): Promise<Buffer> {
     try {
       const result = await execute(executable, ['-config', '', ...args], {
-        encoding: 'utf8',
+        encoding: 'buffer',
         env,
         maxBuffer: 32 * 1024 * 1024,
         timeout: 15_000,
@@ -50,7 +51,7 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
   }
 
   async function caption(file: string): Promise<string> {
-    return run('-b', '-XMP-dc:Description', file);
+    return (await run('-b', '-XMP-dc:Description', file)).toString('utf8');
   }
 
   return {
@@ -66,14 +67,28 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
         throw new Error('The image description must be text without null characters.');
       }
       const id = await imageIdentity(bytes);
-      const destination = join(directory, `described.${extension}`);
+      let destination = join(directory, `described.${extension}`);
       await run('-P', DESCRIPTION_TAG + description, '-o', destination, source);
+      let saved = await readFile(destination);
+      let savedId = await imageIdentity(saved);
+      if (savedId !== id) {
+        // ExifTool can reorder structured XMP fields when writing a single tag.
+        const packet = await run('-b', '-XMP', source);
+        const updated = packet.length ? replaceDefaultXmpDescription(packet, description) : undefined;
+        if (updated !== undefined) {
+          const xmp = join(directory, 'description.xmp');
+          await writeFile(xmp, updated, {flag: 'wx', mode: 0o600});
+          destination = join(directory, `described-packet.${extension}`);
+          await run('-P', `-XMP<=${xmp}`, '-o', destination, source);
+          saved = await readFile(destination);
+          savedId = await imageIdentity(saved);
+        }
+      }
+      if (savedId !== id) {
+        throw new Error('Encoded image data or other metadata changed while saving the description. The image was not saved.');
+      }
       if (await caption(destination) !== description) {
         throw new Error('Embedded description verification failed. The image was not saved.');
-      }
-      const saved = await readFile(destination);
-      if (await imageIdentity(saved) !== id) {
-        throw new Error('Encoded image data or other metadata changed while saving the description. The image was not saved.');
       }
       return saved;
     }),

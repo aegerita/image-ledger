@@ -1,4 +1,4 @@
-import { DOMParser, onErrorStopParsing, type Element } from '@xmldom/xmldom';
+import { DOMParser, onErrorStopParsing, XMLSerializer, type Element } from '@xmldom/xmldom';
 
 const rdf = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const dc = 'http://purl.org/dc/elements/1.1/';
@@ -57,20 +57,23 @@ function readElement(element: Element, depth = 0): XmpNode {
   return {key: name(element.namespaceURI, element.localName ?? element.tagName), attributes, content};
 }
 
-function parsePacket(bytes: Uint8Array): XmpNode {
+function readPacket(bytes: Uint8Array): Element {
   if (bytes.length > 8 * 1024 * 1024) invalidXmp();
   const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le'
     : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
-  let root: XmpNode;
   try {
     const text = new TextDecoder(encoding, {fatal: true}).decode(bytes);
     if (text.includes('<!DOCTYPE')) invalidXmp();
     const document = new DOMParser({onError: onErrorStopParsing}).parseFromString(text, 'application/xml');
     if (!document.documentElement) invalidXmp();
-    root = readElement(document.documentElement);
+    return document.documentElement;
   } catch {
     return invalidXmp();
   }
+}
+
+function parsePacket(bytes: Uint8Array): XmpNode {
+  const root = readElement(readPacket(bytes));
   if (root.key === name(rdf, 'RDF')) return root;
   if (root.key !== name(adobe, 'xmpmeta') && root.key !== name(adobe, 'xapmeta')) invalidXmp();
   const children = elements(root);
@@ -78,6 +81,56 @@ function parsePacket(bytes: Uint8Array): XmpNode {
   const [graph] = children;
   const wrapper = root.attributes.filter(([key]) => key !== name(adobe, 'xmptk'));
   return {...graph, attributes: [...wrapper, ...graph.attributes]};
+}
+
+function childrenNamed(parent: Element, namespace: string, local: string): Element[] {
+  return Array.from(parent.getElementsByTagNameNS(namespace, local)).filter(child => child.parentNode === parent);
+}
+
+export function replaceDefaultXmpDescription(packet: Uint8Array, caption: string): string | undefined {
+  // This fallback writes a single UTF-8 packet. The regular writer handles other encodings and extended packets.
+  if (packet[0] === 0xff || packet[0] === 0xfe) return;
+  const root = readPacket(packet);
+  const document = root.ownerDocument;
+  const graph = root.namespaceURI === rdf ? root : childrenNamed(root, rdf, 'RDF')[0];
+  if (!document || !graph || graph.getElementsByTagNameNS(xmpNote, 'HasExtendedXMP').length) return;
+  const graphLanguage = graph.getAttributeNS(xml, 'lang') ?? root.getAttributeNS(xml, 'lang');
+  const subjects = childrenNamed(graph, rdf, 'Description').filter(subject => {
+    const lang = subject.getAttributeNS(xml, 'lang') ?? graphLanguage;
+    return !subject.getAttributeNS(rdf, 'about') && !subject.hasAttributeNS(rdf, 'ID')
+      && !subject.hasAttributeNS(rdf, 'nodeID') && (!lang || lang === 'x-default');
+  });
+  if (!subjects.length) return;
+  const properties = subjects.flatMap(subject => childrenNamed(subject, dc, 'description'));
+  const attributes = subjects.filter(subject => subject.hasAttributeNS(dc, 'description'));
+  if (properties.length + attributes.length > 1) return;
+  const [attribute] = attributes;
+  attribute?.removeAttributeNS(dc, 'description');
+
+  const property = properties.at(0);
+  let alt = property && childrenNamed(property, rdf, 'Alt')[0];
+  if (property && alt) {
+    const defaults = childrenNamed(alt, rdf, 'li').filter(item => item.getAttributeNS(xml, 'lang') === 'x-default');
+    for (const item of defaults) alt.removeChild(item);
+    if (!caption && !childrenNamed(alt, rdf, 'li').length) property.parentNode?.removeChild(property);
+  } else if (property) {
+    property.parentNode?.removeChild(property);
+  }
+
+  if (caption) {
+    if (!alt) {
+      const created = document.createElementNS(dc, 'dc:description');
+      alt = document.createElementNS(rdf, 'rdf:Alt');
+      created.appendChild(alt);
+      subjects[0].appendChild(created);
+    }
+    const item = document.createElementNS(rdf, 'rdf:li');
+    item.setAttributeNS(xml, 'xml:lang', 'x-default');
+    item.appendChild(document.createTextNode(caption));
+    alt.insertBefore(item, alt.firstChild);
+  }
+  const contents = new XMLSerializer().serializeToString(root);
+  return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n${contents}\n<?xpacket end="w"?>`;
 }
 
 function withoutCaption(property: XmpNode): XmpNode | undefined {

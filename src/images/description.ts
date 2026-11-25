@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
-import { detectImageFormat } from './media';
+import { detectImageFormat, readJpegExif } from './media';
 import { imageIdentity } from './identity';
 import { replaceDefaultXmpDescription } from './xmp';
 
@@ -79,7 +79,15 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
           const xmp = join(directory, 'description.xmp');
           await writeFile(xmp, updated, {flag: 'wx', mode: 0o600});
           destination = join(directory, `described-packet.${extension}`);
-          await run('-P', `-XMP<=${xmp}`, '-o', destination, source);
+          // JPEG packet writes can rebuild EXIF and discard unrecognized MakerNotes entries.
+          const exif = extension === 'jpg' ? readJpegExif(bytes) : undefined;
+          const copyExif: string[] = [];
+          if (exif) {
+            const exifPath = join(directory, 'original.exif');
+            await writeFile(exifPath, exif, {flag: 'wx', mode: 0o600});
+            copyExif.push(`-EXIF<=${exifPath}`);
+          }
+          await run('-P', ...copyExif, `-XMP<=${xmp}`, '-o', destination, source);
           saved = await readFile(destination);
           savedId = await imageIdentity(saved);
         }

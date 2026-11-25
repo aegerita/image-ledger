@@ -250,7 +250,7 @@ test('caption edits keep nested XMP order and all JPEG frames under the original
   }
 });
 
-test('a first description on a JPEG with region metadata preserves its ID on reimport', integration, async () => {
+test('a first description preserves JPEG region metadata, EXIF bytes and ID on reimport', integration, async () => {
   const packet = Buffer.from(`<x:xmpmeta xmlns:x="adobe:ns:meta/">
     <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
       <rdf:Description rdf:about="" xmlns:mwg="http://www.metadataworkinggroup.com/schemas/regions/"
@@ -260,7 +260,9 @@ test('a first description on a JPEG with region metadata preserves its ID on rei
         </mwg:AppliedToDimensions></mwg:Regions>
       </rdf:Description>
     </rdf:RDF></x:xmpmeta>`);
-  const original = jpegWithXmp(packet);
+  const withExif = jpegWithExif({gps: true});
+  const exifEnd = 4 + withExif.readUInt16BE(4);
+  const original = Buffer.concat([withExif.subarray(0, exifEnd), jpegWithXmp(packet).subarray(2)]);
   const id = await imageIdentity(original);
   const codec = createDescriptionCodec(alternate ?? executable);
   const {io} = storageFixture();
@@ -274,6 +276,7 @@ test('a first description on a JPEG with region metadata preserves its ID on rei
   const updated = await store.setDescription(await store.load(image.imagePath), 'First description');
   assert.equal(updated.imagePath, image.imagePath);
   const exported = await io.readBinary(updated.imagePath);
+  assert.deepEqual(Buffer.from(exported.subarray(0, exifEnd)), original.subarray(0, exifEnd));
   assert.deepEqual(await codec.inspect(exported), {id, description: 'First description'});
   const restarted = new MediaStore(io, DEFAULTS, createDescriptionCodec(executable));
   const reimport = await restarted.stage({bytes: exported}, 'Other.md');

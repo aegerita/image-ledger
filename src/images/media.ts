@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ImageFormat } from './model';
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const EXIF_SIGNATURE = Buffer.from('Exif\0\0');
 const SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 
 function invalidImage(format: string): never {
@@ -51,9 +52,11 @@ function validatePng(bytes: Uint8Array): void {
   return invalidImage('PNG');
 }
 
-function validateJpeg(bytes: Uint8Array): void {
+// Validate the JPEG and expose the original EXIF TIFF block when present. MPF uses a separate TIFF block.
+export function readJpegExif(bytes: Uint8Array): Uint8Array | undefined {
   let offset = 2;
   let hasHeader = false;
+  let exif: Uint8Array | undefined;
   while (offset < bytes.length) {
     if (bytes[offset++] !== 0xff) invalidImage('JPEG');
     while (bytes[offset] === 0xff) offset++;
@@ -63,6 +66,10 @@ function validateJpeg(bytes: Uint8Array): void {
     if (offset + 2 > bytes.length) invalidImage('JPEG');
     const length = bytes[offset] * 256 + bytes[offset + 1];
     if (length < 2 || offset + length > bytes.length) invalidImage('JPEG');
+    if (marker === 0xe1 && length > 2 + EXIF_SIGNATURE.length
+      && EXIF_SIGNATURE.every((byte, index) => bytes[offset + 2 + index] === byte)) {
+      exif ??= bytes.subarray(offset + 2 + EXIF_SIGNATURE.length, offset + length);
+    }
     if (SOF_MARKERS.has(marker)) {
       if (length < 8) invalidImage('JPEG');
       const height = bytes[offset + 3] * 256 + bytes[offset + 4];
@@ -76,7 +83,7 @@ function validateJpeg(bytes: Uint8Array): void {
       // Entropy data may contain stuffed FF00 and restart markers. A real EOI
       // is still required; this checks completeness without decoding pixels.
       for (let end = offset + length; end + 1 < bytes.length; end++) {
-        if (bytes[end] === 0xff && bytes[end + 1] === 0xd9) return;
+        if (bytes[end] === 0xff && bytes[end + 1] === 0xd9) return exif;
       }
       invalidImage('JPEG');
     }
@@ -91,7 +98,7 @@ export function detectImageFormat(bytes: Uint8Array): ImageFormat {
     return 'png';
   }
   if (bytes[0] === 0xff && bytes[1] === 0xd8) {
-    validateJpeg(bytes);
+    readJpegExif(bytes);
     return 'jpg';
   }
   throw new Error('Only JPEG and PNG images are supported. Export HEIC or Live Photos as a still JPEG or PNG, then import that file.');

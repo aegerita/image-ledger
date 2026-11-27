@@ -90,6 +90,11 @@ test('ICC profiles, all MPF frames and PNG text survive caption edits and reimpo
       const exported = Uint8Array.from(await io.readBinary(initial.imagePath));
       const edited = await second.describe(exported, 'Second writer');
       assert.deepEqual(await first.inspect(edited), {id: initial.id, description: 'Second writer'});
+      if ('-MPImage2' in tags) {
+        const bytes = Buffer.from(edited);
+        const tiff = bytes.indexOf(Buffer.from('MPF\0')) + 4;
+        assert.equal(bytes.readUInt32LE(tiff + 54), bytes.length - 2 * JPEG.length);
+      }
       const restarted = new MediaStore(io, DEFAULTS, second);
       const imported = await restarted.stage({bytes: edited}, 'Other.md');
       const prepared = await restarted.prepare(imported);
@@ -207,7 +212,7 @@ test('unrelated XMP fields participate in identity and survive caption edits', i
   }
 });
 
-test('caption edits keep nested XMP order and all JPEG frames under the original identity', integration, async () => {
+test('caption edits keep nested XMP order and all JPEG frames under the original identity', integration, async t => {
   const packet = Buffer.from(`<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"
       xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#">
@@ -221,32 +226,60 @@ test('caption edits keep nested XMP order and all JPEG frames under the original
   const withXmp = jpegWithXmp(packet);
   const app1 = withXmp.subarray(2, 4 + withXmp.readUInt16BE(4));
   const mpf = jpegWithMpf();
-  const original = Buffer.concat([mpf.subarray(0, 2), app1, mpf.subarray(2)]);
-  // APP1 precedes MPF, so only the primary frame size needs updating.
-  const primarySize = original.indexOf(Buffer.from('MPF\0')) + 4 + 54;
-  original.writeUInt32LE(original.readUInt32LE(primarySize) + app1.length, primarySize);
-
+  const identifier = Buffer.from('MPF\0');
+  const marker = mpf.indexOf(identifier) - 4;
+  const afterMpf = marker + 2 + mpf.readUInt16BE(marker + 2);
   const codec = createDescriptionCodec(executable);
   const writer = createDescriptionCodec(alternate ?? executable);
-  const baseline = await codec.inspect(original);
-  assert.deepEqual(baseline, {id: 'a519c24e088f8f69d02a86e5c93a36a3df532f17bf1471a386ae817a316622ce', description: ''});
-  let saved: Uint8Array = original;
-  for (const description of ['Synthetic caption & <test>', 'Changed caption', '']) {
-    saved = await writer.describe(saved, description);
-    assert.deepEqual(await codec.inspect(saved), {id: baseline.id, description});
-  }
+  for (const [position, insertion] of [['before', 2], ['after', afterMpf]] as const) {
+    await t.test(`XMP ${position} MPF`, async () => {
+      const original = Buffer.concat([mpf.subarray(0, insertion), app1, mpf.subarray(insertion)]);
+      const tiff = original.indexOf(identifier) + identifier.length;
+      const originalPrimarySize = original.length - 2 * JPEG.length;
+      original.writeUInt32LE(originalPrimarySize, tiff + 54);
+      if (position === 'after') {
+        for (const offset of [74, 90]) {
+          original.writeUInt32LE(original.readUInt32LE(tiff + offset) + app1.length, tiff + offset);
+        }
+      }
+      const baseline = await codec.inspect(original);
+      assert.deepEqual(baseline, {id: 'a519c24e088f8f69d02a86e5c93a36a3df532f17bf1471a386ae817a316622ce', description: ''});
+      let saved: Uint8Array = original;
+      for (const [edit, description] of ['Synthetic caption & <test>', 'Changed caption', ''].entries()) {
+        saved = await writer.describe(saved, description);
+        assert.deepEqual(await codec.inspect(saved), {id: baseline.id, description});
+        const bytes = Buffer.from(saved);
+        const savedTiff = bytes.indexOf(identifier) + identifier.length;
+        const frameEnd = bytes.length - 2 * JPEG.length;
+        assert.deepEqual(bytes.subarray(frameEnd - 2, frameEnd), Buffer.from([0xff, 0xd9]));
+        assert.equal(bytes.readUInt32LE(savedTiff + 54), frameEnd, 'MPF primary size must reach its actual EOI');
+        for (const [index, offset] of [74, 90].entries()) {
+          const start = savedTiff + bytes.readUInt32LE(savedTiff + offset);
+          const size = bytes.readUInt32LE(savedTiff + offset - 4);
+          assert.equal(start, frameEnd + index * JPEG.length);
+          assert.equal(size, JPEG.length);
+          assert.deepEqual(bytes.subarray(start, start + size), JPEG);
+        }
+        if (edit === 0) {
+          // Exercise an input whose earlier caption save left a stale primary size.
+          bytes.writeUInt32LE(frameEnd - 1, savedTiff + 54);
+          saved = bytes;
+        }
+      }
 
-  const directory = await mkdtemp(join(tmpdir(), 'image-ledger-structured-xmp-'));
-  try {
-    const output = join(directory, 'saved.jpg');
-    await writeFile(output, saved);
-    const tag = (name: string) => execFileSync(executable, ['-config', '', '-b', name, output]);
-    assert.match(tag('-XMP').toString(), /<stRef:instanceID>synthetic-instance<\/stRef:instanceID>\s*<stRef:documentID>synthetic-document<\/stRef:documentID>/);
-    assert.equal(tag('-XMP-dc:Description-fr').toString(), 'Texte français');
-    assert.deepEqual(tag('-MPImage2'), JPEG);
-    assert.deepEqual(tag('-MPImage3'), JPEG);
-  } finally {
-    await rm(directory, {recursive: true, force: true});
+      const directory = await mkdtemp(join(tmpdir(), 'image-ledger-structured-xmp-'));
+      try {
+        const output = join(directory, 'saved.jpg');
+        await writeFile(output, saved);
+        const tag = (name: string) => execFileSync(executable, ['-config', '', '-b', name, output]);
+        assert.match(tag('-XMP').toString(), /<stRef:instanceID>synthetic-instance<\/stRef:instanceID>\s*<stRef:documentID>synthetic-document<\/stRef:documentID>/);
+        assert.equal(tag('-XMP-dc:Description-fr').toString(), 'Texte français');
+        assert.deepEqual(tag('-MPImage2'), JPEG);
+        assert.deepEqual(tag('-MPImage3'), JPEG);
+      } finally {
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
   }
 });
 

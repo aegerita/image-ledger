@@ -21,6 +21,7 @@ npm test
 | `src/captures.ts` | Capture batching, description prompts, and recovery on a shared queue. |
 | `src/images/description.ts` | ExifTool caption reads and verified writes. |
 | `src/images/identity.ts`, `xmp.ts` | Versioned JPEG/PNG identity and XMP normalization. |
+| `src/images/mpf.ts` | JPEG header traversal, multi-picture index normalization and repair. |
 | `src/images/store.ts` | Catalog from image filenames, deduplication, staging, and deletion recovery. |
 | `src/images/markdown.ts`, `embeds.ts` | Relative embeds and Lezer-based reference parsing. |
 | `src/obsidian/notes.ts`, `anchors.ts` | Tracked editor insertion, recovery, and guarded note edits. |

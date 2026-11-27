@@ -5,6 +5,7 @@ import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { detectImageFormat, readJpegExif } from './media';
 import { imageIdentity } from './identity';
+import { repairMpfIndex } from './mpf';
 import { replaceDefaultXmpDescription } from './xmp';
 
 const DESCRIPTION_TAG = '-XMP-dc:Description-x-default=';
@@ -67,11 +68,18 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
         throw new Error('The image description must be text without null characters.');
       }
       const id = await imageIdentity(bytes);
+      const original = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      async function verifiedOutput(path: string): Promise<Buffer | undefined> {
+        const written = await readFile(path);
+        const saved = extension === 'jpg' ? repairMpfIndex(original, written) : written;
+        if (!saved || await imageIdentity(saved) !== id) return;
+        if (saved !== written) await writeFile(path, saved);
+        return saved;
+      }
       let destination = join(directory, `described.${extension}`);
       await run('-P', DESCRIPTION_TAG + description, '-o', destination, source);
-      let saved = await readFile(destination);
-      let savedId = await imageIdentity(saved);
-      if (savedId !== id) {
+      let saved = await verifiedOutput(destination);
+      if (!saved) {
         // ExifTool can reorder structured XMP fields when writing a single tag.
         const packet = await run('-b', '-XMP', source);
         const updated = packet.length ? replaceDefaultXmpDescription(packet, description) : undefined;
@@ -88,11 +96,10 @@ export function createDescriptionCodec(executable: string): DescriptionCodec {
             copyExif.push(`-EXIF<=${exifPath}`);
           }
           await run('-P', ...copyExif, `-XMP<=${xmp}`, '-o', destination, source);
-          saved = await readFile(destination);
-          savedId = await imageIdentity(saved);
+          saved = await verifiedOutput(destination);
         }
       }
-      if (savedId !== id) {
+      if (!saved) {
         throw new Error('Encoded image data or other metadata changed while saving the description. The image was not saved.');
       }
       if (await caption(destination) !== description) {

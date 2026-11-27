@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { detectImageFormat, sha256 } from '../src/images/media';
-import { JPEG, PNG } from './fixtures';
+import { repairMpfIndex } from '../src/images/mpf';
+import { JPEG, PNG, jpegWithMpf } from './fixtures';
 
 test('identifies valid JPEG and PNG containers by bytes', () => {
   assert.equal(detectImageFormat(JPEG), 'jpg');
@@ -35,4 +36,16 @@ test('rejects truncated and malformed JPEG/PNG containers before ingestion', () 
 
 test('hashes exact file bytes', () => {
   assert.equal(sha256(Buffer.from('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+test('MPF repair refuses mismatched image counts and changes to auxiliary frame data', () => {
+  const original = jpegWithMpf();
+  const tiff = original.indexOf(Buffer.from('MPF\0')) + 4;
+  const invalidCount = Buffer.from(original);
+  invalidCount.writeUInt32LE(4, tiff + 30);
+  assert.equal(repairMpfIndex(original, invalidCount), undefined);
+  const changedTrailer = Buffer.from(original);
+  changedTrailer[original.length - 4] ^= 1;
+  assert.equal(repairMpfIndex(original, changedTrailer), undefined);
+  assert.equal(repairMpfIndex(original, original), original);
 });

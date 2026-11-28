@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import { detectImageFormat } from './media';
+import { jpegFrameEnd, jpegHeaders, MPF, normalizeMpf } from './mpf';
 import { canonicalXmp } from './xmp';
 
 const XMP_PNG = Buffer.from('XML:com.adobe.xmp\0');
 const XMP_JPEG = Buffer.from('http://ns.adobe.com/xap/1.0/\0');
 const XMP_EXTENDED = Buffer.from('http://ns.adobe.com/xmp/extension/\0');
-const MPF = Buffer.from('MPF\0');
 const PNG_TEXT = new Set(['iTXt', 'tEXt', 'zTXt']);
 
 function invalidXmp(): never {
@@ -90,73 +90,12 @@ function extendedPacket(chunks: ExtendedChunk[]): Buffer {
   return packet;
 }
 
-function jpegFrameEnd(bytes: Buffer, offset: number): number {
-  while (offset < bytes.length) {
-    const start = bytes.indexOf(0xff, offset);
-    if (start === -1) break;
-    offset = start + 1;
-    while (bytes[offset] === 0xff) offset++;
-    const marker = bytes[offset++];
-    if (marker === 0xd9) return offset;
-    if (marker === 0xd8) break;
-    if (marker === 0 || marker === 1 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-    if (offset + 2 > bytes.length) break;
-    const length = bytes.readUInt16BE(offset);
-    if (length < 2) break;
-    offset += length;
-  }
-  throw new Error('The JPEG frame is incomplete. Export the original image again.');
-}
-
-function normalizeMpf(segment: Buffer, payloadOffset: number, absoluteBase: number, bytes: Buffer, frameEnd: number): Buffer {
-  const copy = Buffer.from(segment);
-  const tiff = copy.subarray(payloadOffset + MPF.length);
-  const view = new DataView(tiff.buffer, tiff.byteOffset, tiff.byteLength);
-  const order = tiff.toString('ascii', 0, 2);
-  if (tiff.length < 8 || (order !== 'II' && order !== 'MM')) return segment;
-  const little = order === 'II';
-  if (view.getUint16(2, little) !== 42) return segment;
-  const ifd = view.getUint32(4, little);
-  if (ifd < 8 || ifd + 2 > tiff.length) return segment;
-  const ifdEnd = ifd + 2 + view.getUint16(ifd, little) * 12;
-  if (ifdEnd + 4 > tiff.length) return segment;
-  for (let field = ifd + 2; field < ifdEnd; field += 12) {
-    if (view.getUint16(field, little) !== 0xb002) continue;
-    if (view.getUint16(field + 2, little) !== 7) return segment;
-    const length = view.getUint32(field + 4, little);
-    const list = view.getUint32(field + 8, little);
-    if (!length || length % 16 || list < ifdEnd + 4 || list + length > tiff.length) return segment;
-    if (view.getUint32(list + 8, little) !== 0) return segment;
-    // The first size and later offsets move when the primary JPEG's XMP changes.
-    view.setUint32(list + 4, 0, little);
-    for (let entry = list + 16; entry < list + length; entry += 16) {
-      const relative = view.getUint32(entry + 8, little);
-      const start = absoluteBase + relative;
-      const end = start + view.getUint32(entry + 4, little);
-      if (!relative || start < frameEnd || end < start + 4 || end > bytes.length
-        || bytes[start] !== 0xff || bytes[start + 1] !== 0xd8) return segment;
-      view.setUint32(entry + 8, start - frameEnd, little);
-    }
-    return copy;
-  }
-  return segment;
-}
-
 async function jpegIdentity(bytes: Buffer): Promise<string> {
   const chunks = [bytes.subarray(0, 2)];
   const packets: Buffer[] = [];
   const extended: ExtendedChunk[] = [];
   const mpf: {index: number; payloadOffset: number; absoluteBase: number}[] = [];
-  for (let offset = 2; offset < bytes.length;) {
-    const start = offset;
-    offset++;
-    while (bytes[offset] === 0xff) offset++;
-    const marker = bytes[offset++];
-    if (marker === 1 || (marker >= 0xd0 && marker <= 0xd7)) {
-      chunks.push(bytes.subarray(start, offset));
-      continue;
-    }
-    const end = offset + bytes.readUInt16BE(offset);
+  for (const {start, marker, end, payloadStart} of jpegHeaders(bytes)) {
     if (marker === 0xda) {
       if (mpf.length) {
         const frameEnd = jpegFrameEnd(bytes, end);
@@ -167,18 +106,17 @@ async function jpegIdentity(bytes: Buffer): Promise<string> {
       chunks.push(bytes.subarray(start));
       break;
     }
-    const payload = bytes.subarray(offset + 2, end);
+    const payload = bytes.subarray(payloadStart, end);
     if (marker === 0xe1 && payload.subarray(0, XMP_JPEG.length).equals(XMP_JPEG)) {
       packets.push(payload.subarray(XMP_JPEG.length));
     } else if (marker === 0xe1 && payload.subarray(0, XMP_EXTENDED.length).equals(XMP_EXTENDED)) {
       extended.push(extendedChunk(payload.subarray(XMP_EXTENDED.length)));
     } else {
       if (marker === 0xe2 && payload.subarray(0, MPF.length).equals(MPF)) {
-        mpf.push({index: chunks.length, payloadOffset: offset + 2 - start, absoluteBase: offset + 2 + MPF.length});
+        mpf.push({index: chunks.length, payloadOffset: payloadStart - start, absoluteBase: payloadStart + MPF.length});
       }
       chunks.push(bytes.subarray(start, end));
     }
-    offset = end;
   }
   if (packets.length > 1 || (extended.length && packets.length !== 1)) invalidXmp();
   if (extended.length) packets.push(extendedPacket(extended));

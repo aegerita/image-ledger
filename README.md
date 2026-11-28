@@ -35,7 +35,7 @@ Image Ledger caches captions and image identities in `.image-ledger/catalog-cach
 
 Copy the image files or the entire image folder to export them. The images contain their descriptions and received photo metadata. Use a file checksum to verify a transfer. The image ID stays stable through description edits and ExifTool upgrades. Recompression or other metadata edits can produce a different ID.
 
-The plugin verifies the encoded image and other metadata before saving a description. It stops the save if verification fails. Clipboard conversion can remove GPS or capture dates before Obsidian receives the file. Import the original JPEG or PNG when that metadata matters. A file copy carries embedded photo dates. Filesystem timestamps depend on how you copy it.
+The plugin verifies the encoded image and other metadata before saving a description. For multi-picture JPEGs, it updates the frame index to match the saved file. It stops the save if verification fails. Clipboard conversion can remove GPS or capture dates before Obsidian receives the file. Import the original JPEG or PNG when that metadata matters. A file copy carries embedded photo dates. Filesystem timestamps depend on how you copy it.
 
 ## Delete and recover
 
